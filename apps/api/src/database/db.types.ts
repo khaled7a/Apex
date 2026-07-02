@@ -214,6 +214,8 @@ export interface Order {
   final_value_sar: Numeric | null;
   financial_commitment_started_at: Timestamp | null;
   fob_value_usd: Numeric | null;
+  fx_rate_deviation_approved_at: Timestamp | null;
+  fx_rate_deviation_approved_by: string | null;
   fx_rate_deviation_flag: Generated<boolean>;
   fx_rate_entered_by: string | null;
   fx_rate_source: string | null;

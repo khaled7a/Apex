@@ -1,6 +1,6 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { Kysely } from 'kysely';
-import { ActorRef } from '@apex/domain';
+import { ActorRef, PermissionAction } from '@apex/domain';
 import { KYSELY } from '../database/database.module';
 import { DB } from '../database/db.types';
 import { UnitOfWork } from '../database/unit-of-work';
@@ -9,8 +9,7 @@ import { FinancialApprovalService } from '../financial-approval/financial-approv
 import { ResolveMandatoryRefundDto } from './dto/resolve-mandatory-refund.dto';
 
 const SYSTEM: ActorRef = { role: 'SYSTEM', id: null };
-const MANDATORY_REFUND_ACTION = 'DISPUTE_RESOLVE_MANDATORY_REFUND';
-const OWNER_ACCOUNTANT_ROLES = new Set(['ADMIN_OWNER', 'ADMIN_ACCOUNTANT']);
+const MANDATORY_REFUND_ACTION: PermissionAction = 'DISPUTE_RESOLVE_MANDATORY_REFUND';
 
 @Injectable()
 export class DisputesService {
@@ -45,24 +44,15 @@ export class DisputesService {
     return this.engine.transition({ orderId, event: 'admin_cancel_order', actor, expectedStateVersion });
   }
 
-  private async requireOwnerOrAccountant(adminId: string): Promise<'ADMIN_OWNER' | 'ADMIN_ACCOUNTANT'> {
-    const trx = this.uow.getClient();
-    const admin = await trx.selectFrom('admin_user').select(['role']).where('id', '=', adminId).executeTakeFirst();
-    if (!admin) throw new NotFoundException(`admin ${adminId} not found`);
-    const role = `ADMIN_${admin.role}`;
-    if (!OWNER_ACCOUNTANT_ROLES.has(role)) {
-      throw new BadRequestException(`admin ${adminId} is ${role}, but mandatory-refund resolution requires OWNER or ACCOUNTANT`);
-    }
-    return role as 'ADMIN_OWNER' | 'ADMIN_ACCOUNTANT';
-  }
-
-  /** Step 1 of real four-eyes: submitter (OWNER or ACCOUNTANT) names the *other* role as the required approver. */
+  /**
+   * Step 1 of real four-eyes: names the required approver. Role membership
+   * (must be OWNER/ACCOUNTANT) and "must be the other role than the
+   * submitter" are both enforced centrally by FinancialApprovalService from
+   * PERMISSION_MATRIX — discovered during review that this method used to
+   * hand-roll an OWNER_ACCOUNTANT_ROLES Set here, a duplicate of the matrix
+   * that could silently drift out of sync with it.
+   */
   async proposeMandatoryRefundResolution(orderId: string, submitterActor: ActorRef, approverId: string) {
-    const submitterRole = await this.requireOwnerOrAccountant(submitterActor.id!);
-    const approverRole = await this.requireOwnerOrAccountant(approverId);
-    if (approverRole === submitterRole) {
-      throw new BadRequestException('the approver must be the OTHER of OWNER/ACCOUNTANT, not the same role as the submitter');
-    }
     return this.financialApproval.propose({
       entityType: 'order',
       entityId: orderId,
@@ -81,8 +71,8 @@ export class DisputesService {
       approverId: approverActor.id!,
     });
 
-    const submitterRole = await this.requireOwnerOrAccountant(approval.submitter_id);
-    const approverRole = await this.requireOwnerOrAccountant(approval.approver_id);
+    const submitterRole = await this.financialApproval.getAdminRole(approval.submitter_id);
+    const approverRole = await this.financialApproval.getAdminRole(approval.approver_id);
     const ownerId = submitterRole === 'ADMIN_OWNER' ? approval.submitter_id : approval.approver_id;
     const accountantId = approverRole === 'ADMIN_ACCOUNTANT' ? approval.approver_id : approval.submitter_id;
 
@@ -92,12 +82,11 @@ export class DisputesService {
       throw new BadRequestException('order has no active dispute to resolve');
     }
 
-    let version = dto.expectedStateVersion;
     const resolved = await this.engine.transition({
       orderId,
       event: 'resolve_with_refund_decision',
       actor: approverActor,
-      expectedStateVersion: version,
+      expectedStateVersion: dto.expectedStateVersion,
       effect: async (effectTrx) => {
         await effectTrx
           .insertInto('refund_transaction')
@@ -113,9 +102,8 @@ export class DisputesService {
           .execute();
       },
     });
-    version += 1;
 
-    const closed = await this.engine.transition({ orderId, event: 'final_close', actor: SYSTEM, expectedStateVersion: version });
+    const closed = await this.engine.transition({ orderId, event: 'final_close', actor: SYSTEM, expectedStateVersion: resolved.stateVersion });
     return { resolved, closed };
   }
 }

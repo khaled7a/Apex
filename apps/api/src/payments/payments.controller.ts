@@ -6,6 +6,8 @@ import { UploadReceiptDto } from './dto/upload-receipt.dto';
 import { CustomerAuthGuard } from '../auth/guards/customer-auth.guard';
 import { SupplierAuthGuard } from '../auth/guards/supplier-auth.guard';
 import { AdminAuthGuard } from '../auth/guards/admin-auth.guard';
+import { PermissionMatrixGuard } from '../auth/guards/permission-matrix.guard';
+import { RequiresPermission } from '../auth/decorators/requires-permission.decorator';
 import { RequestWithActor } from '../auth/request-with-actor';
 
 @ApiTags('payments')
@@ -68,13 +70,15 @@ export class PaymentsController {
   }
 
   @Post(':orderId/admin-verification/propose')
-  @UseGuards(AdminAuthGuard)
+  @UseGuards(AdminAuthGuard, PermissionMatrixGuard)
+  @RequiresPermission('SUPPLIER_PAYMENT_ADMIN_VERIFICATION')
   proposeAdminVerification(@Req() req: RequestWithActor, @Param('orderId') orderId: string, @Body('approverId') approverId: string) {
     return this.payments.proposeAdminVerification(orderId, req.actor!.id!, approverId);
   }
 
   @Post(':orderId/admin-verification/approve')
-  @UseGuards(AdminAuthGuard)
+  @UseGuards(AdminAuthGuard, PermissionMatrixGuard)
+  @RequiresPermission('SUPPLIER_PAYMENT_ADMIN_VERIFICATION')
   approveAdminVerification(
     @Req() req: RequestWithActor,
     @Param('orderId') orderId: string,

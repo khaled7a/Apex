@@ -72,7 +72,7 @@ export class OrdersService {
 
   async reject(orderId: string, actor: ActorRef, expectedStateVersion: number) {
     const rejected = await this.engine.transition({ orderId, event: 'reject', actor, expectedStateVersion });
-    await this.engine.transition({ orderId, event: 'auto_close', actor: SYSTEM, expectedStateVersion: expectedStateVersion + 1 });
+    await this.engine.transition({ orderId, event: 'auto_close', actor: SYSTEM, expectedStateVersion: rejected.stateVersion });
     return rejected;
   }
 
@@ -113,24 +113,30 @@ export class OrdersService {
       .where('id', '=', orderId)
       .execute();
 
-    let version = dto.expectedStateVersion;
-    await this.engine.transition({ orderId, event: 'approve', actor, expectedStateVersion: version });
-    version += 1;
-    await this.engine.transition({ orderId, event: 'continue', actor: SYSTEM, expectedStateVersion: version });
-    version += 1;
-    const routed = await this.engine.transition({ orderId, event: 'route', actor: SYSTEM, expectedStateVersion: version });
+    const approved = await this.engine.transition({ orderId, event: 'approve', actor, expectedStateVersion: dto.expectedStateVersion });
+    const continued = await this.engine.transition({
+      orderId,
+      event: 'continue',
+      actor: SYSTEM,
+      expectedStateVersion: approved.stateVersion,
+    });
+    const routed = await this.engine.transition({
+      orderId,
+      event: 'route',
+      actor: SYSTEM,
+      expectedStateVersion: continued.stateVersion,
+    });
 
     // REG_PUBLISHED has no independent business decision attached to it in
     // v1 (the "open broadcast, no category gate" decision means publishing
     // is automatic the instant routing lands here) — chain it in the same
     // request rather than requiring a separate admin click.
     if (routed.toState === 'REG_PUBLISHED') {
-      version += 1;
       return this.engine.transition({
         orderId,
         event: 'auto_publish',
         actor: SYSTEM,
-        expectedStateVersion: version,
+        expectedStateVersion: routed.stateVersion,
         ctxOverrides: { biddingDeadlineMs: this.config.get('biddingDeadlineMs', { infer: true }) },
       });
     }

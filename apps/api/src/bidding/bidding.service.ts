@@ -1,12 +1,14 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Kysely } from 'kysely';
-import { ActorRef } from '@apex/domain';
+import { ActorRef, isActionAllowed } from '@apex/domain';
 import { KYSELY } from '../database/database.module';
 import { DB } from '../database/db.types';
 import { UnitOfWork } from '../database/unit-of-work';
 import { TransitionEngineService } from '../transition-engine/transition-engine.service';
 import { SubmitOfferDto } from './dto/submit-offer.dto';
 import { ReviewBidsDto } from './dto/review-bids.dto';
+import { AppConfig } from '../config/configuration';
 
 const SYSTEM: ActorRef = { role: 'SYSTEM', id: null };
 
@@ -16,6 +18,7 @@ export class BiddingService {
     @Inject(KYSELY) private readonly db: Kysely<DB>,
     private readonly uow: UnitOfWork,
     private readonly engine: TransitionEngineService,
+    private readonly config: ConfigService<AppConfig, true>,
   ) {}
 
   /** Fires the closed-bidding self-loop event; RLS on `offer` is what actually enforces isolation between suppliers. */
@@ -57,13 +60,24 @@ export class BiddingService {
       throw new BadRequestException('cannot review bids with zero offers');
     }
 
+    // fx_rate_deviation_flag was documented in docs/data-model.md §1 as a
+    // required tripwire ("انحراف > حد معيّن عن سعر مرجعي ⇒ يتطلب اعتماد OWNER
+    // إضافي") but discovered during review to be entirely unimplemented — a
+    // single OPERATOR could enter any fx_rate_used with zero oversight. Now
+    // computed for real against an independently supplied reference rate.
+    const deviationRatio = Math.abs(dto.fxRateUsed - dto.fxReferenceRate) / dto.fxReferenceRate;
+    const deviationFlag = deviationRatio > this.config.get('fxDeviationThresholdPct', { infer: true });
+
     await trx
       .updateTable('order')
       .set({
         fx_rate_used: dto.fxRateUsed,
         fx_rate_source: dto.fxRateSource,
-        fx_rate_entered_by: actor.role.startsWith('ADMIN') ? actor.id : null,
+        fx_rate_entered_by: isActionAllowed('OFFER_APPROVAL_AND_FX_RATE_ENTRY', actor.role) ? actor.id : null,
         low_competition_offer: offers.length === 1,
+        fx_rate_deviation_flag: deviationFlag,
+        fx_rate_deviation_approved_by: null,
+        fx_rate_deviation_approved_at: null,
       })
       .where('id', '=', orderId)
       .execute();
@@ -74,6 +88,24 @@ export class BiddingService {
       actor,
       expectedStateVersion: dto.expectedStateVersion,
     });
+  }
+
+  /** The extra OWNER sign-off docs/data-model.md §1 requires before a flagged (deviating) fx rate can be used to select an offer. */
+  async approveFxDeviation(orderId: string, actor: ActorRef) {
+    if (actor.role !== 'ADMIN_OWNER') {
+      throw new ForbiddenException('only ADMIN_OWNER may approve an fx rate deviation');
+    }
+    const trx = this.uow.getClient();
+    const order = await trx.selectFrom('order').select(['fx_rate_deviation_flag']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    if (!order.fx_rate_deviation_flag) {
+      throw new BadRequestException('this order has no flagged fx rate deviation to approve');
+    }
+    await trx
+      .updateTable('order')
+      .set({ fx_rate_deviation_approved_by: actor.id, fx_rate_deviation_approved_at: new Date() })
+      .where('id', '=', orderId)
+      .execute();
+    return { approved: true };
   }
 
   async rejectAllOffers(orderId: string, actor: ActorRef, expectedStateVersion: number) {
@@ -96,11 +128,14 @@ export class BiddingService {
 
     const order = await trx
       .selectFrom('order')
-      .select(['fx_rate_used'])
+      .select(['fx_rate_used', 'fx_rate_deviation_flag', 'fx_rate_deviation_approved_at'])
       .where('id', '=', orderId)
       .executeTakeFirstOrThrow();
     if (!order.fx_rate_used) {
       throw new BadRequestException('fx_rate_used has not been set yet — offers must be reviewed first');
+    }
+    if (order.fx_rate_deviation_flag && !order.fx_rate_deviation_approved_at) {
+      throw new BadRequestException('fx_rate_used deviates from the reference rate beyond the allowed threshold — requires an additional OWNER approval before an offer can be selected');
     }
 
     const finalValueSar = Number(offer.fob_value_usd) * Number(order.fx_rate_used);
@@ -115,9 +150,7 @@ export class BiddingService {
       .where('id', '=', orderId)
       .execute();
 
-    let version = expectedStateVersion;
-    await this.engine.transition({ orderId, event: 'customer_selects', actor, expectedStateVersion: version });
-    version += 1;
-    return this.engine.transition({ orderId, event: 'continue', actor: SYSTEM, expectedStateVersion: version });
+    const selected = await this.engine.transition({ orderId, event: 'customer_selects', actor, expectedStateVersion });
+    return this.engine.transition({ orderId, event: 'continue', actor: SYSTEM, expectedStateVersion: selected.stateVersion });
   }
 }

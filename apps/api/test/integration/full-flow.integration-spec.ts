@@ -93,6 +93,38 @@ describe('Apex Sourcing — full v1 flow (real PostgreSQL, no mocks)', () => {
     return orderId;
   }
 
+  /** Drives an order to PAYMENT_PENDING_ADMIN_VERIFICATION (post supplier-ack, state_version 15) with a real payment row, ready for the four-eyes admin-verification step. */
+  async function createOrderPendingAdminVerification(skipVerification = false) {
+    const orderId = await createOrderWithTwoOffers();
+    await request(server)
+      .post(`/bidding/${orderId}/review`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ expectedStateVersion: 7, fxRateUsed: 3.75, fxRateSource: 'SAMA', fxReferenceRate: 3.75 });
+    const offers = await request(server).get(`/bidding/${orderId}/offers`).set('Authorization', `Bearer ${supplier1Token}`);
+    const offerId = offers.body[0].id;
+    await request(server).post(`/bidding/${orderId}/select/${offerId}`).set('Authorization', `Bearer ${customerToken}`).send({ expectedStateVersion: 8 });
+    const plan = await request(server)
+      .post(`/contracts/${orderId}/payment-plan`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ installments: [{ label: 'FIRST_PAYMENT', expectedAmountSar: 37500, isTrustFund: true, refundPolicy: 'REFUNDABLE_UNTIL_EVENT' }] });
+    const installmentId = plan.body.installments[0].id;
+    await request(server).post(`/contracts/${orderId}/sign`).set('Authorization', `Bearer ${customerToken}`).send({ expectedStateVersion: 10, signatureRef: 'esign-1' });
+    const notify = await request(server)
+      .post(`/payments/${orderId}/notify-transfer`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ installmentId, expectedStateVersion: 11 });
+    const paymentId = notify.body.payment.id;
+    await request(server)
+      .post(`/payments/${orderId}/receipts`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ paymentId, expectedStateVersion: 12, fileUrl: 'r.pdf', bankReferenceNo: 'REF-1', bankName: 'Bank', amountClaimed: 37500, transferDateClaimed: '2026-01-01' });
+    await request(server).post(`/payments/${orderId}/verification/start`).set('Authorization', `Bearer ${ownerToken}`).send({ expectedStateVersion: 13 });
+    if (skipVerification) return { orderId, paymentId };
+    await request(server).post(`/payments/${orderId}/verification/match`).set('Authorization', `Bearer ${ownerToken}`).send({ paymentId, expectedStateVersion: 14 });
+    await request(server).post(`/payments/${orderId}/supplier-ack`).set('Authorization', `Bearer ${supplier1Token}`).send({ expectedStateVersion: 15 });
+    return { orderId, paymentId };
+  }
+
   it('isolates closed-bidding offers via real RLS — a supplier never sees another supplier\'s bid', async () => {
     const orderId = await createOrderWithTwoOffers();
 
@@ -187,7 +219,7 @@ describe('Apex Sourcing — full v1 flow (real PostgreSQL, no mocks)', () => {
     await request(server)
       .post(`/bidding/${orderId}/review`)
       .set('Authorization', `Bearer ${ownerToken}`)
-      .send({ expectedStateVersion: 7, fxRateUsed: 3.75, fxRateSource: 'SAMA' })
+      .send({ expectedStateVersion: 7, fxRateUsed: 3.75, fxRateSource: 'SAMA', fxReferenceRate: 3.75 })
       .expect(201);
 
     const offers = await request(server).get(`/bidding/${orderId}/offers`).set('Authorization', `Bearer ${supplier1Token}`);
@@ -339,5 +371,123 @@ describe('Apex Sourcing — full v1 flow (real PostgreSQL, no mocks)', () => {
     } finally {
       await asAppRole.destroy();
     }
+  });
+
+  it('rejects a designated four-eyes approver whose role is not OWNER/ACCOUNTANT — two OPERATORs cannot jointly confirm a supplier payment', async () => {
+    const { orderId } = await createOrderPendingAdminVerification();
+    const secondOperatorId = 'a4444444-4444-4444-4444-444444444444';
+    await db.insertInto('admin_user').values({ id: secondOperatorId, name: 'Second Operator', email: 'op2@apex.sa', role: 'OPERATOR' }).execute();
+
+    const propose = await request(server)
+      .post(`/payments/${orderId}/admin-verification/propose`)
+      .set('Authorization', `Bearer ${operatorToken}`)
+      .send({ approverId: secondOperatorId });
+    expect(propose.status).toBe(400); // finalApproverRoles=[OWNER,ACCOUNTANT] rejects an OPERATOR approver up front
+
+    const pending = await db.selectFrom('financial_approval').selectAll().where('entity_id', '=', orderId).executeTakeFirst();
+    expect(pending).toBeUndefined(); // never even got inserted
+  });
+
+  it('rejects a receipt/payment that does not actually belong to the order in the URL', async () => {
+    const { orderId, paymentId } = await createOrderPendingAdminVerification(true); // stop before the legitimate verification/match — receipt is still PENDING
+    const otherOrderId = await createOrderWithTwoOffers(); // a real, unrelated order
+
+    const crossOrder = await request(server)
+      .post(`/payments/${otherOrderId}/verification/match`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ paymentId, expectedStateVersion: 7 }); // findReceiptForOrder 404s before the version check ever runs, regardless of otherOrderId's real version
+    expect(crossOrder.status).toBe(404);
+
+    const receipt = await db.selectFrom('receipt').select(['verification_status']).where('payment_id', '=', paymentId).executeTakeFirstOrThrow();
+    expect(receipt.verification_status).not.toBe('VERIFIED'); // untouched — the mismatched order never got to touch it
+
+    // Sanity check: the SAME (orderId, paymentId) pair legitimately succeeds.
+    await request(server)
+      .post(`/payments/${orderId}/verification/match`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ paymentId, expectedStateVersion: 14 })
+      .expect(201);
+  });
+
+  it('requires the mandatory-refund approver to hold a different role than the submitter, not merely be a different person', async () => {
+    const orderId = await createOrderWithTwoOffers();
+    await db
+      .updateTable('order')
+      .set({ current_state: 'SUPPLIER_PAYMENT_CONFIRMED', state_version: 99, registered_supplier_id: SUPPLIER_1_ID, financial_commitment_started_at: new Date(0) })
+      .where('id', '=', orderId)
+      .execute();
+    await request(server).post(`/disputes/${orderId}/admin-cancel`).set('Authorization', `Bearer ${ownerToken}`).send({ expectedStateVersion: 99 });
+
+    const secondOwnerId = 'a5555555-5555-5555-5555-555555555555';
+    await db.insertInto('admin_user').values({ id: secondOwnerId, name: 'Second Owner', email: 'owner2@apex.sa', role: 'OWNER', mfa_enabled: true }).execute();
+
+    const sameRolePropose = await request(server)
+      .post(`/disputes/${orderId}/mandatory-refund/propose`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ approverId: secondOwnerId }); // two different OWNERs — different people, same role
+    expect(sameRolePropose.status).toBe(400);
+
+    const validPropose = await request(server)
+      .post(`/disputes/${orderId}/mandatory-refund/propose`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ approverId: ACCOUNTANT_ID });
+    expect(validPropose.status).toBe(201);
+  });
+
+  it('blocks offer selection on a deviating fx_rate_used until an ADMIN_OWNER approves it, then unblocks after approval', async () => {
+    const orderId = await createOrderWithTwoOffers();
+    await request(server)
+      .post(`/bidding/${orderId}/review`)
+      .set('Authorization', `Bearer ${operatorToken}`)
+      .send({ expectedStateVersion: 7, fxRateUsed: 5.0, fxRateSource: 'SAMA', fxReferenceRate: 3.75 }) // ~33% deviation, well over the 5% default threshold
+      .expect(201);
+
+    const orderFlagged = await db.selectFrom('order').select(['fx_rate_deviation_flag']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    expect(orderFlagged.fx_rate_deviation_flag).toBe(true);
+
+    const offers = await request(server).get(`/bidding/${orderId}/offers`).set('Authorization', `Bearer ${supplier1Token}`);
+    const offerId = offers.body[0].id;
+
+    const blocked = await request(server)
+      .post(`/bidding/${orderId}/select/${offerId}`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ expectedStateVersion: 8 });
+    expect(blocked.status).toBe(400);
+
+    const deniedForOperator = await request(server).post(`/bidding/${orderId}/fx-deviation/approve`).set('Authorization', `Bearer ${operatorToken}`);
+    expect(deniedForOperator.status).toBe(403); // OFFER_APPROVAL_AND_FX_RATE_ENTRY allows OPERATOR, but this extra sign-off is OWNER-only
+
+    await request(server).post(`/bidding/${orderId}/fx-deviation/approve`).set('Authorization', `Bearer ${ownerToken}`).expect(201);
+
+    const selected = await request(server)
+      .post(`/bidding/${orderId}/select/${offerId}`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ expectedStateVersion: 8 });
+    expect(selected.status).toBe(201);
+  });
+
+  it('creates a real dispute row when a hold transitions directly from ESCALATION into DISPUTE, instead of leaving active_dispute_id null', async () => {
+    const orderId = await createOrderWithTwoOffers();
+    await db
+      .updateTable('order')
+      .set({ current_state: 'ESCALATION_ESCALATED', state_version: 50, hold_type: 'ESCALATION', resume_target_state: 'PROD_CHECKPOINT_1' })
+      .where('id', '=', orderId)
+      .execute();
+
+    const opened = await request(server)
+      .post(`/disputes/${orderId}/open/admin`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ event: 'open_delay_dispute', expectedStateVersion: 50 })
+      .expect(201);
+    expect(opened.body.toState).toBe('DISPUTE_DELAY');
+
+    const order = await db.selectFrom('order').select(['active_dispute_id', 'hold_type']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    expect(order.hold_type).toBe('DISPUTE');
+    expect(order.active_dispute_id).not.toBeNull();
+
+    const dispute = await db.selectFrom('dispute').selectAll().where('order_id', '=', orderId).executeTakeFirst();
+    expect(dispute).toBeDefined();
+    expect(dispute?.status).toBe('OPEN');
+    expect(dispute?.type).toBe('DELAY');
   });
 });

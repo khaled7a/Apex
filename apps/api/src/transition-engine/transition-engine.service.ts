@@ -27,6 +27,8 @@ export interface TransitionOutcome {
   fromState: OrderState;
   toState: OrderState;
   event: string;
+  /** The order's state_version after this transition — read this back instead of hand-incrementing expectedStateVersion for a chained call, since a self-loop does not bump it. */
+  stateVersion: number;
 }
 
 /**
@@ -100,7 +102,13 @@ export class TransitionEngineService {
     const newHoldType = enteringDispute ? 'DISPUTE' : enteringEscalation ? 'ESCALATION' : 'NONE';
 
     let newActiveDisputeId = order.active_dispute_id;
-    if (enteringDispute && !wasInHold) {
+    // Keyed off "no dispute row tracked yet" rather than "!wasInHold" —
+    // discovered during review that an order transitioning directly from an
+    // ESCALATION hold into a DISPUTE state (e.g. supplier_no_response_final,
+    // open_delay_dispute) has wasInHold=true, so the old `!wasInHold` guard
+    // skipped creating the dispute row entirely: hold_type became 'DISPUTE'
+    // with active_dispute_id left null, invisible to admin dispute queries.
+    if (enteringDispute && !order.active_dispute_id) {
       const disputeType = DISPUTE_TYPE_BY_STATE[toState];
       if (disputeType) {
         const created = await trx
@@ -224,6 +232,6 @@ export class TransitionEngineService {
       }
     }
 
-    return { fromState, toState, event: request.event };
+    return { fromState, toState, event: request.event, stateVersion: nextStateVersion };
   }
 }

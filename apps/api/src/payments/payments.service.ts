@@ -1,17 +1,18 @@
 import { createHash } from 'node:crypto';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { Kysely } from 'kysely';
-import { ActorRef } from '@apex/domain';
+import { ActorRef, PermissionAction } from '@apex/domain';
 import { KYSELY } from '../database/database.module';
 import { DB } from '../database/db.types';
 import { UnitOfWork } from '../database/unit-of-work';
 import { TransitionEngineService } from '../transition-engine/transition-engine.service';
+import { TransitionRejectedError } from '../transition-engine/transition-engine.errors';
 import { FinancialApprovalService } from '../financial-approval/financial-approval.service';
 import { NotifyTransferDto } from './dto/notify-transfer.dto';
 import { UploadReceiptDto } from './dto/upload-receipt.dto';
 
 const SYSTEM: ActorRef = { role: 'SYSTEM', id: null };
-const SUPPLIER_PAYMENT_VERIFICATION = 'SUPPLIER_PAYMENT_ADMIN_VERIFICATION';
+const SUPPLIER_PAYMENT_VERIFICATION: PermissionAction = 'SUPPLIER_PAYMENT_ADMIN_VERIFICATION';
 
 @Injectable()
 export class PaymentsService {
@@ -93,10 +94,32 @@ export class PaymentsService {
     return this.engine.transition({ orderId, event: 'start_verification', actor, expectedStateVersion });
   }
 
+  /**
+   * Confirms `paymentId` actually belongs to `orderId` before touching it —
+   * discovered during review that markReceiptVerified/rejectReceipt looked
+   * up the receipt by paymentId alone, so a mismatched (orderId, paymentId)
+   * pair would silently verify/reject a *different* order's receipt while
+   * firing the state transition on this one.
+   */
+  private async findReceiptForOrder(orderId: string, paymentId: string) {
+    const trx = this.uow.getClient();
+    const receipt = await trx
+      .selectFrom('receipt')
+      .innerJoin('payment', 'payment.id', 'receipt.payment_id')
+      .innerJoin('payment_installment', 'payment_installment.id', 'payment.installment_id')
+      .innerJoin('payment_plan', 'payment_plan.id', 'payment_installment.payment_plan_id')
+      .innerJoin('contract', 'contract.id', 'payment_plan.contract_id')
+      .select(['receipt.id as id'])
+      .where('receipt.payment_id', '=', paymentId)
+      .where('contract.order_id', '=', orderId)
+      .executeTakeFirst();
+    if (!receipt) throw new NotFoundException(`no receipt found for payment ${paymentId} on order ${orderId}`);
+    return receipt;
+  }
+
   async markReceiptVerified(orderId: string, actor: ActorRef, paymentId: string, expectedStateVersion: number) {
     const trx = this.uow.getClient();
-    const receipt = await trx.selectFrom('receipt').select(['id']).where('payment_id', '=', paymentId).executeTakeFirst();
-    if (!receipt) throw new NotFoundException(`no receipt found for payment ${paymentId}`);
+    const receipt = await this.findReceiptForOrder(orderId, paymentId);
 
     await trx
       .updateTable('receipt')
@@ -109,8 +132,7 @@ export class PaymentsService {
 
   async rejectReceipt(orderId: string, actor: ActorRef, paymentId: string, reason: string, expectedStateVersion: number) {
     const trx = this.uow.getClient();
-    const receipt = await trx.selectFrom('receipt').select(['id']).where('payment_id', '=', paymentId).executeTakeFirst();
-    if (!receipt) throw new NotFoundException(`no receipt found for payment ${paymentId}`);
+    const receipt = await this.findReceiptForOrder(orderId, paymentId);
 
     await trx
       .updateTable('receipt')
@@ -189,22 +211,33 @@ export class PaymentsService {
       },
     });
 
-    let version = expectedStateVersion + 1;
     try {
       const revealed = await this.engine.transition({
         orderId,
         event: 'reveal_identity',
         actor: SYSTEM,
-        expectedStateVersion: version,
+        expectedStateVersion: outcome.stateVersion,
         ctxOverrides: { isFirstEscrowPayment: wasFirstEscrowPayment },
       });
-      version += 1;
-      const routed = await this.engine.transition({ orderId, event: 'continue', actor: SYSTEM, expectedStateVersion: version });
+      const routed = await this.engine.transition({
+        orderId,
+        event: 'continue',
+        actor: SYSTEM,
+        expectedStateVersion: revealed.stateVersion,
+      });
       return { outcome, revealed, routed };
-    } catch {
-      // Expected for later (non-first) escrow payments, or service types
-      // without identity management — the order simply stays where it is.
-      return { outcome };
+    } catch (err) {
+      // Only a deny-by-default guard rejection (later/non-first escrow
+      // payments, or service types without identity management) is expected
+      // here — the order simply stays where it is. Anything else (a real
+      // StaleStateError from concurrent modification, a DB error, ...) must
+      // NOT be swallowed: discovered during review that a bare `catch {}`
+      // here would silently hide a genuine failure and return a false
+      // success, leaving the order stuck with no error trail.
+      if (err instanceof TransitionRejectedError) {
+        return { outcome };
+      }
+      throw err;
     }
   }
 

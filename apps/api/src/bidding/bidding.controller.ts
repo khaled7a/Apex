@@ -35,6 +35,13 @@ export class BiddingController {
     return this.bidding.reviewBids(orderId, req.actor!, dto);
   }
 
+  @Post(':orderId/fx-deviation/approve')
+  @UseGuards(AdminAuthGuard, PermissionMatrixGuard)
+  @RequiresPermission('FX_RATE_DEVIATION_OWNER_APPROVAL')
+  approveFxDeviation(@Req() req: RequestWithActor, @Param('orderId') orderId: string) {
+    return this.bidding.approveFxDeviation(orderId, req.actor!);
+  }
+
   @Post(':orderId/select/:offerId')
   @UseGuards(CustomerAuthGuard)
   selectOffer(

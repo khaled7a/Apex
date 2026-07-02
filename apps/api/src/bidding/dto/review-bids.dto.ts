@@ -14,4 +14,9 @@ export class ReviewBidsDto {
   @ApiProperty({ description: 'Where the rate came from — required so it can be audited later.' })
   @IsString()
   fxRateSource!: string;
+
+  @ApiProperty({ description: 'Independent reference/market USD->SAR rate, used only to compute the deviation tripwire — never stored as the order\'s rate.' })
+  @IsNumber()
+  @IsPositive()
+  fxReferenceRate!: number;
 }

@@ -8,6 +8,8 @@ export interface AppConfig {
   };
   /** Bidding window length in ms — defaults to the real 72h, override for staging/tests via BIDDING_DEADLINE_MS. */
   biddingDeadlineMs: number;
+  /** fx_rate_used deviation from fxReferenceRate beyond this fraction (0.05 = 5%) sets fx_rate_deviation_flag and blocks offer selection until an extra OWNER approval — docs/data-model.md §1's documented tripwire, previously undocumented as unimplemented. */
+  fxDeviationThresholdPct: number;
 }
 
 function requireEnv(name: string): string {
@@ -30,5 +32,6 @@ export function loadConfig(): AppConfig {
       adminSecret: requireEnv('JWT_ADMIN_SECRET'),
     },
     biddingDeadlineMs: Number(process.env.BIDDING_DEADLINE_MS ?? 72 * 60 * 60 * 1000),
+    fxDeviationThresholdPct: Number(process.env.FX_DEVIATION_THRESHOLD_PCT ?? 0.05),
   };
 }

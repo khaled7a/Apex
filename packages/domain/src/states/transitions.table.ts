@@ -260,7 +260,13 @@ export const TRANSITIONS: readonly TransitionRow[] = [
   {
     from: 'PAYMENT_PENDING_ADMIN_VERIFICATION',
     event: 'admin_confirms_with_supplier',
-    allowedRoles: ANY_ADMIN, // four-eyes (submitter != approver) enforced by FourEyesGuard in apps/api
+    // ANY_ADMIN gates who may be *involved* at all; the real four-eyes rule
+    // (submitter != approver, AND only OWNER/ACCOUNTANT may give the final
+    // approve()) is enforced by FinancialApprovalService in apps/api, driven
+    // by PERMISSION_MATRIX's SUPPLIER_PAYMENT_ADMIN_VERIFICATION.finalApproverRoles
+    // — there is no separate "FourEyesGuard" class; that was a stale comment
+    // discovered during review pointing at code that was never written.
+    allowedRoles: ANY_ADMIN,
     to: 'SUPPLIER_PAYMENT_CONFIRMED',
   },
   {

@@ -2,6 +2,7 @@ import { Body, Controller, ForbiddenException, Post } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { AdminJwtRole } from './jwt-payload.types';
+import { Public } from './decorators/public.decorator';
 
 function assertNotProduction() {
   if (process.env.NODE_ENV === 'production') {
@@ -11,6 +12,7 @@ function assertNotProduction() {
 
 @ApiTags('auth (dev-only token issuance)')
 @Controller('auth/dev')
+@Public()
 export class AuthController {
   constructor(private readonly auth: AuthService) {}
 

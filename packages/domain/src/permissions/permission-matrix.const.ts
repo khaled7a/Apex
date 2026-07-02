@@ -4,6 +4,7 @@ export type PermissionAction =
   | 'ORDER_APPROVE_EDIT_REJECT'
   | 'EXTERNAL_SUPPLIER_FINAL_APPROVAL'
   | 'OFFER_APPROVAL_AND_FX_RATE_ENTRY'
+  | 'FX_RATE_DEVIATION_OWNER_APPROVAL'
   | 'ROUTINE_RECEIPT_VERIFICATION'
   | 'SUPPLIER_PAYMENT_ADMIN_VERIFICATION'
   | 'CUSTOMS_FEE_MANAGE'
@@ -18,6 +19,16 @@ export interface PermissionRule {
   allowedRoles: readonly ActorRole[];
   /** true if the action requires two distinct admins (submitter != approver). */
   requiresFourEyes: boolean;
+  /**
+   * Roles allowed to give the *final* approve() for a four-eyes action, when
+   * narrower than allowedRoles (e.g. OPERATOR may propose but not finally
+   * approve). Defaults to allowedRoles when omitted — see
+   * isFinalApproverRoleAllowed(). FinancialApprovalService is the ONLY place
+   * this is enforced; it must never be re-derived ad hoc in a *.service.ts.
+   */
+  finalApproverRoles?: readonly ActorRole[];
+  /** true if the designated approver's role must differ from the submitter's role (not just a different person). */
+  approverRoleMustDifferFromSubmitter?: boolean;
   note: string;
 }
 
@@ -44,7 +55,13 @@ export const PERMISSION_MATRIX: readonly PermissionRule[] = [
     action: 'OFFER_APPROVAL_AND_FX_RATE_ENTRY',
     allowedRoles: ['ADMIN_OWNER', 'ADMIN_OPERATOR'],
     requiresFourEyes: false,
-    note: 'اعتماد عرض + إدخال fx_rate — انحراف كبير عن السعر المرجعي يتطلب اعتماد OWNER إضافي',
+    note: 'اعتماد عرض + إدخال fx_rate — انحراف كبير عن السعر المرجعي يتطلب اعتماد OWNER إضافي (انظر FX_RATE_DEVIATION_OWNER_APPROVAL)',
+  },
+  {
+    action: 'FX_RATE_DEVIATION_OWNER_APPROVAL',
+    allowedRoles: ['ADMIN_OWNER'],
+    requiresFourEyes: false,
+    note: 'اعتماد OWNER الإضافي المطلوب فقط عندما ينحرف fx_rate_used عن السعر المرجعي فوق الحد المسموح',
   },
   {
     action: 'ROUTINE_RECEIPT_VERIFICATION',
@@ -56,6 +73,7 @@ export const PERMISSION_MATRIX: readonly PermissionRule[] = [
     action: 'SUPPLIER_PAYMENT_ADMIN_VERIFICATION',
     allowedRoles: ['ADMIN_OWNER', 'ADMIN_OPERATOR', 'ADMIN_ACCOUNTANT'],
     requiresFourEyes: true,
+    finalApproverRoles: ['ADMIN_OWNER', 'ADMIN_ACCOUNTANT'],
     note: 'التحقق مع المورد وقفل الاسترجاع — OPERATOR يبدأ فقط، ACCOUNTANT/OWNER يعتمد نهائياً',
   },
   {
@@ -74,7 +92,8 @@ export const PERMISSION_MATRIX: readonly PermissionRule[] = [
     action: 'DISPUTE_RESOLVE_MANDATORY_REFUND',
     allowedRoles: ['ADMIN_OWNER', 'ADMIN_ACCOUNTANT'],
     requiresFourEyes: true,
-    note: 'حل DISPUTE_MANDATORY_REFUND — OWNER و ACCOUNTANT معاً إلزامياً',
+    approverRoleMustDifferFromSubmitter: true,
+    note: 'حل DISPUTE_MANDATORY_REFUND — OWNER و ACCOUNTANT معاً إلزامياً (الشخصان من دورين مختلفين)',
   },
   {
     action: 'VIEW_ACTUAL_PROFIT_MARGIN',
@@ -104,4 +123,15 @@ export function isActionAllowed(action: PermissionAction, role: ActorRole): bool
 
 export function requiresFourEyes(action: PermissionAction): boolean {
   return PERMISSION_MATRIX.find((r) => r.action === action)?.requiresFourEyes ?? false;
+}
+
+/** The role(s) allowed to give the final approve() for a four-eyes action — narrower than allowedRoles for actions like SUPPLIER_PAYMENT_ADMIN_VERIFICATION. */
+export function isFinalApproverRoleAllowed(action: PermissionAction, role: ActorRole): boolean {
+  const rule = PERMISSION_MATRIX.find((r) => r.action === action);
+  if (!rule) return false;
+  return (rule.finalApproverRoles ?? rule.allowedRoles).includes(role);
+}
+
+export function approverRoleMustDifferFromSubmitter(action: PermissionAction): boolean {
+  return PERMISSION_MATRIX.find((r) => r.action === action)?.approverRoleMustDifferFromSubmitter ?? false;
 }
