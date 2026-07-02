@@ -65,7 +65,7 @@
 | `customer_id` | FK | — |
 | `service_type_id` | FK → ServiceType | يُحدَّد نهائياً وقت اعتماد الإدارة |
 | `supplier_type` | ENUM(`REGISTERED`,`EXTERNAL`,`NONE`) | `NONE` لحالة `SHIPPING_CLEARANCE_ONLY` |
-| `registered_supplier_id` / `external_supplier_id` | FK nullable | أحدهما فقط غير NULL حسب `supplier_type` (قيد CHECK) |
+| `registered_supplier_id` / `external_supplier_id` | FK nullable | **مُصحَّح أثناء التنفيذ**: `EXTERNAL` يتطلب `external_supplier_id` فوراً (المورد معروف مسبقاً)، أما `REGISTERED` فيبدأ بـ`registered_supplier_id = NULL` ويُملأ لاحقاً فقط بعد فوز مورد محدَّد بالمزايدة (`REG_CUSTOMER_SELECTS`) — القيد الأصلي كان يتطلب خطأً وجود `registered_supplier_id` فوراً وقت اختيار نمط المصدر، قبل أن يُعرف أي مورد بعد |
 | `current_state` | ENUM | من جدول الحالات في `state-machine.md` |
 | `state_version` | INTEGER | للقفل التفاؤلي |
 | `hold_type` | ENUM(`NONE`,`ESCALATION`,`DISPUTE`) nullable | مستقل عن `current_state` |
@@ -81,7 +81,7 @@
 | `low_competition_offer` | bool | يُعلَّم إن كان عرض واحد فقط ورد بالمزايدة |
 | `created_at` | | |
 
-**قيد فريد جزئي مهم**: `UNIQUE (id) WHERE hold_type = 'DISPUTE'` على جدول ربط منفصل (`order_active_dispute`) لمنع نزاعين نشطين على نفس الطلب فعلياً على مستوى القاعدة لا التطبيق فقط.
+**قيد فريد جزئي مهم (مُصحَّح أثناء التنفيذ)**: المحاولة الأولى لوضع هذا القيد على `"order"(id) WHERE hold_type='DISPUTE'` كانت عديمة الأثر فعلياً (أي فهرس على `id` زائد عن الحاجة لأن المفتاح الأساسي يضمنه أصلاً). القيد الصحيح المطبَّق فعلياً في `schema.sql`: `CREATE UNIQUE INDEX one_open_dispute_per_order ON dispute(order_id) WHERE status='OPEN'` — على جدول `dispute` نفسه، وتم التحقق منه عملياً ضد PostgreSQL حي (محاولة فتح نزاع ثانٍ بحالة `OPEN` على نفس `order_id` تُرفَض بـ`unique_violation`).
 
 ### `AgreementRenewal`
 `id`, `order_id`, `renewal_of_agreement_id` (يشير لنفسه أو لعقد سابق — سلسلة قابلة للتتبع عبر أكثر من تجديد), `requested_at`, `supplier_decision` (`PENDING`/`APPROVED`/`DECLINED`), `supplier_decided_at`, `admin_decision`, `admin_decided_by`, `admin_decided_at`.

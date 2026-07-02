@@ -208,10 +208,10 @@ CREATE TABLE "order" (
 ALTER TABLE external_supplier
   ADD CONSTRAINT external_supplier_order_fk FOREIGN KEY (order_id) REFERENCES "order"(id);
 
--- Enforce "no two concurrent disputes on the same order" at the DB level,
--- not just in application code (state-machine.md §0.3).
-CREATE UNIQUE INDEX one_active_dispute_per_order
-  ON "order" (id) WHERE hold_type = 'DISPUTE';
+-- NOTE: "no two concurrent disputes on the same order" cannot be enforced
+-- here — a UNIQUE index on "order"(id) is a no-op (the primary key already
+-- guarantees it). The real constraint belongs on the `dispute` table itself
+-- (see `one_open_dispute_per_order` below, added once that table exists).
 
 CREATE INDEX idx_order_customer ON "order"(customer_id);
 CREATE INDEX idx_order_state ON "order"(current_state);
@@ -451,6 +451,12 @@ CREATE TABLE dispute (
   resolved_at                   TIMESTAMPTZ,
   resolution_notes              TEXT
 );
+
+-- The actual DB-level enforcement of "no two concurrent open disputes per
+-- order" (state-machine.md §0.3) — a second OPEN row for the same order_id
+-- is rejected outright, not just discouraged by application logic.
+CREATE UNIQUE INDEX one_open_dispute_per_order
+  ON dispute (order_id) WHERE status = 'OPEN';
 
 CREATE TABLE dispute_claim (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
