@@ -104,6 +104,17 @@ describe('Apex Sourcing — full v1 flow (real PostgreSQL, no mocks)', () => {
     throw new Error(`order ${orderId} did not reach ${expected} within ${timeoutMs}ms`);
   }
 
+  /** Polls until no notification_log row for this order is still PENDING — the actual send happens async, after the transition transaction that recorded it has already committed. */
+  async function waitForNotificationsSettled(orderId: string, timeoutMs = 15000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const pending = await db.selectFrom('notification_log').select(['id']).where('order_id', '=', orderId).where('status', '=', 'PENDING').executeTakeFirst();
+      if (!pending) return;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`notification_log rows for ${orderId} did not settle within ${timeoutMs}ms`);
+  }
+
   /** Drives an order to PAYMENT_PENDING_ADMIN_VERIFICATION (post supplier-ack, state_version 15) with a real payment row, ready for the four-eyes admin-verification step. */
   async function createOrderPendingAdminVerification(skipVerification = false) {
     const orderId = await createOrderWithTwoOffers();
@@ -848,5 +859,50 @@ describe('Apex Sourcing — full v1 flow (real PostgreSQL, no mocks)', () => {
     const dispute = await db.selectFrom('dispute').selectAll().where('order_id', '=', orderId).executeTakeFirstOrThrow();
     expect(dispute.type).toBe('MANDATORY_REFUND');
     expect(dispute.status).toBe('OPEN');
+  });
+
+  it('records one CUSTOMER/EMAIL notification per real state transition, skipping self-loops, with the fixed generic message', async () => {
+    const orderId = await createOrderWithTwoOffers(); // includes two self-loop offer submissions during REG_BIDS_COLLECTING
+    await waitForNotificationsSettled(orderId);
+
+    const transitions = await db.selectFrom('state_transition_log').select(['from_state', 'to_state']).where('order_id', '=', orderId).execute();
+    const realTransitionCount = transitions.filter((t) => t.from_state !== t.to_state).length;
+
+    const customerNotifications = await db
+      .selectFrom('notification_log')
+      .selectAll()
+      .where('order_id', '=', orderId)
+      .where('recipient_type', '=', 'CUSTOMER')
+      .execute();
+
+    // No self-loop rows: exactly one CUSTOMER/EMAIL notification per actual
+    // state change, not per event (the two competing offers during
+    // REG_BIDS_COLLECTING must not have produced their own rows).
+    expect(customerNotifications).toHaveLength(realTransitionCount);
+    expect(customerNotifications.every((n) => n.channel === 'EMAIL')).toBe(true);
+    expect(customerNotifications.every((n) => n.message === `تحديث جديد على طلبك رقم #${orderId}، تفضل بالدخول`)).toBe(true);
+    // No SMTP credentials configured in this test environment — the atomic
+    // record still happens, the network send is best-effort and skips cleanly.
+    expect(customerNotifications.every((n) => n.status === 'SKIPPED_NO_CONFIG')).toBe(true);
+  });
+
+  it('records SKIPPED_NO_CONTACT rows for a registered supplier with no contact_email/whatsapp_phone once assigned to the order', async () => {
+    const { orderId } = await createOrderPendingAdminVerification(true); // registered_supplier_id is set at offer-selection, well before this point
+    await waitForNotificationsSettled(orderId);
+
+    const supplierNotifications = await db
+      .selectFrom('notification_log')
+      .selectAll()
+      .where('order_id', '=', orderId)
+      .where('recipient_type', '=', 'SUPPLIER')
+      .where('recipient_id', '=', SUPPLIER_1_ID)
+      .execute();
+
+    expect(supplierNotifications.length).toBeGreaterThan(0);
+    expect(supplierNotifications.every((n) => n.status === 'SKIPPED_NO_CONTACT')).toBe(true);
+    // Every registered-supplier transition produces both channels — assert
+    // the set present, not a fixed count (several transitions happen between
+    // offer-selection and this point, each contributing an EMAIL+WHATSAPP pair).
+    expect(new Set(supplierNotifications.map((n) => n.channel))).toEqual(new Set(['EMAIL', 'WHATSAPP']));
   });
 });

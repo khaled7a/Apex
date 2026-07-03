@@ -194,6 +194,19 @@ export interface FinancialApproval {
   submitter_id: string;
 }
 
+export interface NotificationLog {
+  channel: string;
+  created_at: Generated<Timestamp>;
+  error: string | null;
+  id: Generated<string>;
+  message: string;
+  order_id: string;
+  recipient_id: string;
+  recipient_type: string;
+  sent_at: Timestamp | null;
+  status: Generated<string>;
+}
+
 export interface Offer {
   admin_review_status: Generated<string>;
   fob_value_usd: Numeric;
@@ -308,10 +321,12 @@ export interface RefundTransaction {
 
 export interface RegisteredSupplier {
   bank_account_ref: string | null;
+  contact_email: string | null;
   created_at: Generated<Timestamp>;
   id: Generated<string>;
   is_active: Generated<boolean>;
   legal_name: string;
+  whatsapp_phone: string | null;
 }
 
 export interface SalaryAccrual {
@@ -407,6 +422,7 @@ export interface DB {
   escalation: Escalation;
   external_supplier: ExternalSupplier;
   financial_approval: FinancialApproval;
+  notification_log: NotificationLog;
   offer: Offer;
   order: Order;
   payment: Payment;

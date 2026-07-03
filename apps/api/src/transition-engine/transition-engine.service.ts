@@ -9,6 +9,7 @@ import { buildGuardContext } from './build-guard-context';
 import { StaleStateError, TransitionRejectedError } from './transition-engine.errors';
 import { DISPUTE_TYPE_BY_STATE, ESCALATION_ACTOR_BY_EVENT, isDisputeState, isEscalationState, isRenewalState } from './hold-state.util';
 import { TIMER_SCHEDULER, TimerSchedulerPort } from '../scheduler/timer-scheduler.port';
+import { NotificationsService } from '../notifications/notifications.service';
 
 export interface TransitionRequest {
   orderId: string;
@@ -43,6 +44,7 @@ export class TransitionEngineService {
     @Inject(KYSELY) private readonly db: Kysely<DB>,
     private readonly uow: UnitOfWork,
     private readonly auditLog: AuditLogService,
+    private readonly notifications: NotificationsService,
     @Optional() @Inject(TIMER_SCHEDULER) private readonly scheduler?: TimerSchedulerPort,
   ) {}
 
@@ -240,6 +242,19 @@ export class TransitionEngineService {
       stateBefore: { current_state: fromState },
       stateAfter: { current_state: toState },
     });
+
+    // Notification *intent* is recorded atomically here, alongside the state
+    // change itself (docs/state-machine.md §0) — the actual network send is
+    // best-effort, dispatched after commit by NotificationDispatchWorker.
+    // Skipped for self-loops (e.g. a second competing offer during
+    // REG_BIDS_COLLECTING) — nothing about the order's state actually changed.
+    if (!isSelfLoop) {
+      await this.notifications.recordAndEnqueue(trx, {
+        id: order.id,
+        customer_id: order.customer_id,
+        registered_supplier_id: order.registered_supplier_id,
+      });
+    }
 
     for (const timerType of result.row.cancelsTimers ?? []) {
       await trx
