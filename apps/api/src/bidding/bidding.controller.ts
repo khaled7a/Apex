@@ -16,6 +16,12 @@ import { RequestWithActor } from '../auth/request-with-actor';
 export class BiddingController {
   constructor(private readonly bidding: BiddingService) {}
 
+  @Get('board')
+  @UseGuards(SupplierAuthGuard)
+  listBiddingBoard() {
+    return this.bidding.listBiddingBoard();
+  }
+
   @Post(':orderId/offers')
   @UseGuards(SupplierAuthGuard)
   submitOffer(@Req() req: RequestWithActor, @Param('orderId') orderId: string, @Body() dto: SubmitOfferDto) {

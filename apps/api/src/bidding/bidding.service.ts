@@ -21,6 +21,22 @@ export class BiddingService {
     private readonly config: ConfigService<AppConfig, true>,
   ) {}
 
+  /**
+   * `bidding_board` (migrations/1700000000018_rls-policies.sql) was created
+   * specifically for this — a narrow, customer-identity-free projection of
+   * open orders — but nothing ever queried it: a supplier had no way to
+   * discover an orderId to bid on at all before this endpoint existed.
+   */
+  async listBiddingBoard() {
+    const trx = this.uow.getClient();
+    return trx
+      .selectFrom('bidding_board')
+      .innerJoin('service_type', 'service_type.id', 'bidding_board.service_type_id')
+      .select(['bidding_board.order_id', 'service_type.label_ar as serviceTypeLabel', 'bidding_board.fob_value_usd', 'bidding_board.created_at'])
+      .orderBy('bidding_board.created_at', 'desc')
+      .execute();
+  }
+
   /** Fires the closed-bidding self-loop event; RLS on `offer` is what actually enforces isolation between suppliers. */
   async submitOffer(orderId: string, supplierId: string, dto: SubmitOfferDto) {
     const trx = this.uow.getClient();

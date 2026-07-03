@@ -65,7 +65,7 @@ pnpm --filter @apex/api build && pnpm --filter @apex/api start:prod
 ```bash
 pnpm --filter @apex/domain test          # 31 اختبار وحدة — منطق آلة الحالة، بلا شبكة/قاعدة بيانات
 pnpm --filter @apex/api build            # فحص TypeScript كامل + تصريف
-pnpm --filter @apex/api test:integration # 38 اختبار ضد PostgreSQL حقيقي (apex_test) — RLS، القفل التفاؤلي، four-eyes الحقيقي بقيود الأدوار، عزل الإيصال حسب الطلب، انحراف fx_rate، سلسلة سجل التدقيق، المسار الكامل حتى COMPLETED، التصعيد التلقائي الحي، مسار التجديد بنقطة استئناف صحيحة، سجل الإشعارات الذري، الدخول الحقيقي، عزل قراءات العميل، تحكم وصول الملفات المرفوعة
+pnpm --filter @apex/api test:integration # 42 اختبار ضد PostgreSQL حقيقي (apex_test) — RLS، القفل التفاؤلي، four-eyes الحقيقي بقيود الأدوار، عزل الإيصال حسب الطلب، انحراف fx_rate، سلسلة سجل التدقيق، المسار الكامل حتى COMPLETED، التصعيد التلقائي الحي، مسار التجديد بنقطة استئناف صحيحة، سجل الإشعارات الذري، الدخول الحقيقي، عزل قراءات العميل والمورد، تحكم وصول الملفات المرفوعة
 ```
 
 اختبارات التكامل تتطلب قاعدة بيانات `apex_test` منفصلة عن `apex_dev`، مُهاجَرة بنفس الطريقة:
@@ -132,6 +132,14 @@ psql -d apex_test -c "ALTER ROLE app_role WITH PASSWORD '...';"
 - **رفع الملفات** (إيصالات، إثبات جمركي) عبر Server Actions تستدعي `POST /uploads` مباشرة بـ`FormData` (بلا وسيط proxy إضافي — Server Actions في Next.js تدعم ملفات حقيقية في `FormData` أصلاً).
 - شغّل محلياً: `pnpm --filter @apex/web-customer dev -p 3001` (يحتاج `apps/api` يعمل على المنفذ 3000 مع `FRONTEND_ORIGIN=http://localhost:3001` في `.env` الجذر). تفاصيل أوسع في `apps/web-customer/README.md`.
 - **مؤجَّل عمداً**: بوابتا المورد والإدارة، "نسيت كلمة المرور" (يمكن بناؤها لاحقاً فوق نظام الإشعارات القائم)، تخزين S3/سحابي للملفات.
+
+## فجوات الباك-إند اللازمة لبوابة المورد
+
+عند التحضير لبوابة المورد انكشفت 3 فجوات من نفس نمط ما وُجد لبوابة العميل:
+
+- **`GET /bidding/board`** (`SupplierAuthGuard`) — `VIEW bidding_board` كان موجوداً فعلاً منذ هجرة RLS الأولى (مقصود تحديداً لهذا الغرض) لكن **لا كود استعلم منه إطلاقاً** — لم يكن هناك أي طريقة للمورد ليكتشف رقم طلب مفتوح للمزايدة رغم أن `POST /bidding/:orderId/offers` يعمل فعلياً.
+- **`GET /orders/assigned-to-me`** (`SupplierAuthGuard`) — نظير `GET /orders/me` لكن بفلترة `registered_supplier_id` بدل `customer_id`.
+- **`GET /orders/:id/detail-for-supplier`** (`SupplierAuthGuard`) — قراءة مجمَّعة كنظيرتها للعميل، لكن **لا تنضم لجدول `customer` إطلاقاً** (`customer.phone`: *"never shown to any supplier"* بتصميم `docs/schema.sql`، والجدول بلا RLS — عدم الاستعلام هو الضمان لا منطق تصفية إضافي) وتستبعد `shippingDocuments`/`customsFees`/`receipts` (سياسات RLS الحالية مقصورة على العميل بتصميم موثَّق صراحة).
 
 ## سجل الإصلاحات المكتشفة أثناء البناء
 

@@ -55,6 +55,22 @@ export class OrdersService {
   }
 
   /**
+   * The supplier-side equivalent of listMine — orders this supplier has
+   * actually won (registered_supplier_id set at offer-selection time). Before
+   * that point an order the supplier bid on lives in the bidding board
+   * instead (GET /bidding/board), not here.
+   */
+  async listAssignedToSupplier(supplierId: string) {
+    const trx = this.uow.getClient();
+    return trx
+      .selectFrom('order')
+      .select(['id', 'service_type_id', 'current_state', 'hold_type', 'created_at', 'final_value_sar'])
+      .where('registered_supplier_id', '=', supplierId)
+      .orderBy('created_at', 'desc')
+      .execute();
+  }
+
+  /**
    * One aggregated read across every table the order-detail hub needs, so
    * the frontend doesn't fire 8-10 separate requests per page load. RLS
    * already scopes every joined table by actor, but customer_id is checked
@@ -135,6 +151,52 @@ export class OrdersService {
       renewals,
       timeline,
     };
+  }
+
+  /**
+   * Supplier equivalent of getDetailForCustomer — deliberately narrower:
+   * never joins the `customer` table at all (docs/schema.sql: customer.phone
+   * is "never shown to any supplier", and there's no RLS on `customer` to
+   * fall back on, so simply not querying it is the safeguard), and omits
+   * shipping_document/customs_fee/receipt — those RLS read policies are
+   * customer-only by explicit design (see 1700000000018's comment on
+   * customs_fee_read/shipping_document_read), and a supplier's role in the
+   * order is effectively done by the time those become relevant.
+   */
+  async getDetailForSupplier(orderId: string, supplierId: string) {
+    const trx = this.uow.getClient();
+    const order = await trx.selectFrom('order').selectAll().where('id', '=', orderId).executeTakeFirst();
+    if (!order || order.registered_supplier_id !== supplierId) {
+      throw new NotFoundException(`order ${orderId} not found`);
+    }
+
+    const [contract, productionUpdates, disputes, escalations, renewals, timeline] = await Promise.all([
+      trx.selectFrom('contract').selectAll().where('order_id', '=', orderId).executeTakeFirst(),
+      trx.selectFrom('production_update').selectAll().where('order_id', '=', orderId).orderBy('posted_at', 'asc').execute(),
+      trx.selectFrom('dispute').selectAll().where('order_id', '=', orderId).execute(),
+      trx.selectFrom('escalation').selectAll().where('order_id', '=', orderId).execute(),
+      trx.selectFrom('agreement_renewal').selectAll().where('order_id', '=', orderId).execute(),
+      trx.selectFrom('state_transition_log').selectAll().where('order_id', '=', orderId).orderBy('id', 'asc').execute(),
+    ]);
+
+    const disputeClaims = disputes.length
+      ? await trx
+          .selectFrom('dispute_claim')
+          .selectAll()
+          .where(
+            'dispute_id',
+            'in',
+            disputes.map((d) => d.id),
+          )
+          .execute()
+      : [];
+
+    const paymentPlan = contract ? await trx.selectFrom('payment_plan').selectAll().where('contract_id', '=', contract.id).executeTakeFirst() : undefined;
+    const installments = paymentPlan
+      ? await trx.selectFrom('payment_installment').selectAll().where('payment_plan_id', '=', paymentPlan.id).orderBy('sequence_no', 'asc').execute()
+      : [];
+
+    return { order, contract, paymentPlan, installments, productionUpdates, disputes, disputeClaims, escalations, renewals, timeline };
   }
 
   async submit(orderId: string, actor: ActorRef, expectedStateVersion: number) {

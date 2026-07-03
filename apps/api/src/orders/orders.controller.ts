@@ -4,6 +4,7 @@ import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
 import { ApproveOrderDto } from './dto/approve-order.dto';
 import { CustomerAuthGuard } from '../auth/guards/customer-auth.guard';
+import { SupplierAuthGuard } from '../auth/guards/supplier-auth.guard';
 import { AdminAuthGuard } from '../auth/guards/admin-auth.guard';
 import { PermissionMatrixGuard } from '../auth/guards/permission-matrix.guard';
 import { RequiresPermission } from '../auth/decorators/requires-permission.decorator';
@@ -30,6 +31,12 @@ export class OrdersController {
     return this.orders.listMine(req.actor!.id!);
   }
 
+  @Get('assigned-to-me')
+  @UseGuards(SupplierAuthGuard)
+  listAssignedToSupplier(@Req() req: RequestWithActor) {
+    return this.orders.listAssignedToSupplier(req.actor!.id!);
+  }
+
   @Get(':id')
   @UseGuards(AdminAuthGuard)
   get(@Param('id') id: string) {
@@ -40,6 +47,12 @@ export class OrdersController {
   @UseGuards(CustomerAuthGuard)
   getDetail(@Req() req: RequestWithActor, @Param('id') id: string) {
     return this.orders.getDetailForCustomer(id, req.actor!.id!);
+  }
+
+  @Get(':id/detail-for-supplier')
+  @UseGuards(SupplierAuthGuard)
+  getDetailForSupplier(@Req() req: RequestWithActor, @Param('id') id: string) {
+    return this.orders.getDetailForSupplier(id, req.actor!.id!);
   }
 
   @Post(':id/submit')
