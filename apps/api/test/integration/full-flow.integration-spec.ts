@@ -88,9 +88,20 @@ describe('Apex Sourcing — full v1 flow (real PostgreSQL, no mocks)', () => {
       .set('Authorization', `Bearer ${supplier2Token}`)
       .send({ fobValueUsd: 9500, leadTimeDays: 25, terms: '25 days' });
 
-    await new Promise((resolve) => setTimeout(resolve, 5000)); // BIDDING_DEADLINE_MS=3000 in env.setup.js
+    await waitForState(orderId, 'REG_ADMIN_REVIEW_BIDS'); // BIDDING_DEADLINE_MS=3000 in env.setup.js — polls instead of a fixed sleep, since pg-boss's queue depth (and thus pickup latency) grows with the rest of this suite.
 
     return orderId;
+  }
+
+  /** Polls until the order's current_state matches (or times out) — more robust than a fixed sleep once several tests share one pg-boss worker with a growing job backlog. */
+  async function waitForState(orderId: string, expected: string, timeoutMs = 15000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const order = await db.selectFrom('order').select(['current_state']).where('id', '=', orderId).executeTakeFirst();
+      if (order?.current_state === expected) return;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error(`order ${orderId} did not reach ${expected} within ${timeoutMs}ms`);
   }
 
   /** Drives an order to PAYMENT_PENDING_ADMIN_VERIFICATION (post supplier-ack, state_version 15) with a real payment row, ready for the four-eyes admin-verification step. */
@@ -123,6 +134,21 @@ describe('Apex Sourcing — full v1 flow (real PostgreSQL, no mocks)', () => {
     await request(server).post(`/payments/${orderId}/verification/match`).set('Authorization', `Bearer ${ownerToken}`).send({ paymentId, expectedStateVersion: 14 });
     await request(server).post(`/payments/${orderId}/supplier-ack`).set('Authorization', `Bearer ${supplier1Token}`).send({ expectedStateVersion: 15 });
     return { orderId, paymentId };
+  }
+
+  /** Drives an order all the way to PROD_DESIGN_SUBMITTED via the real four-eyes payment-verification chain (DOOR_TO_DOOR has production oversight enabled). */
+  async function createOrderAtProdDesignSubmitted() {
+    const { orderId, paymentId } = await createOrderPendingAdminVerification();
+    await request(server)
+      .post(`/payments/${orderId}/admin-verification/propose`)
+      .set('Authorization', `Bearer ${operatorToken}`)
+      .send({ approverId: ACCOUNTANT_ID });
+    const approve = await request(server)
+      .post(`/payments/${orderId}/admin-verification/approve`)
+      .set('Authorization', `Bearer ${accountantToken}`)
+      .send({ paymentId, expectedStateVersion: 16 });
+    expect(approve.body.routed.toState).toBe('PROD_DESIGN_SUBMITTED');
+    return { orderId, stateVersion: approve.body.routed.stateVersion as number };
   }
 
   it('isolates closed-bidding offers via real RLS — a supplier never sees another supplier\'s bid', async () => {
@@ -489,5 +515,231 @@ describe('Apex Sourcing — full v1 flow (real PostgreSQL, no mocks)', () => {
     expect(dispute).toBeDefined();
     expect(dispute?.status).toBe('OPEN');
     expect(dispute?.type).toBe('DELAY');
+  });
+
+  it('drives the v2 happy path from PROD_DESIGN_SUBMITTED all the way to COMPLETED', async () => {
+    const { orderId, stateVersion: v0 } = await createOrderAtProdDesignSubmitted();
+
+    const designed = await request(server)
+      .post(`/production/${orderId}/design`)
+      .set('Authorization', `Bearer ${supplier1Token}`)
+      .send({ kind: 'image', fileUrl: 'design.png', expectedStateVersion: v0 })
+      .expect(201);
+    expect(designed.body.toState).toBe('PROD_CHECKPOINT_1');
+
+    const approvedDesign = await request(server)
+      .post(`/production/${orderId}/approve`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ expectedStateVersion: designed.body.stateVersion })
+      .expect(201);
+    expect(approvedDesign.body.toState).toBe('PROD_FULL_PRODUCTION');
+
+    const qc = await request(server)
+      .post(`/production/${orderId}/qc`)
+      .set('Authorization', `Bearer ${supplier1Token}`)
+      .send({ kind: 'image', fileUrl: 'qc.png', expectedStateVersion: approvedDesign.body.stateVersion })
+      .expect(201);
+    expect(qc.body.toState).toBe('PROD_CHECKPOINT_2');
+
+    const approvedQc = await request(server)
+      .post(`/production/${orderId}/approve`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ expectedStateVersion: qc.body.stateVersion })
+      .expect(201);
+    expect(approvedQc.body.toState).toBe('LOADING_SHIPPING');
+
+    const production = await db.selectFrom('production_update').select(['kind', 'posted_by']).where('order_id', '=', orderId).execute();
+    expect(production).toHaveLength(2);
+    expect(production.every((p) => p.posted_by === 'SUPPLIER')).toBe(true);
+
+    const toDocs = await request(server)
+      .post(`/shipping/${orderId}/advance-to-docs`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ expectedStateVersion: approvedQc.body.stateVersion })
+      .expect(201);
+    expect(toDocs.body.toState).toBe('SHIPPING_DOCS');
+
+    await request(server)
+      .post(`/shipping/${orderId}/documents`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ docType: 'bill_of_lading', fileUrl: 'bol.pdf' })
+      .expect(201);
+
+    const docsUploaded = await request(server)
+      .post(`/shipping/${orderId}/documents/finalize`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ expectedStateVersion: toDocs.body.stateVersion })
+      .expect(201);
+    expect(docsUploaded.body.toState).toBe('PAYMENT_INSTALLMENTS_PENDING');
+
+    const installmentsConfirmed = await request(server)
+      .post(`/shipping/${orderId}/installments/confirm`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ expectedStateVersion: docsUploaded.body.stateVersion })
+      .expect(201);
+    expect(installmentsConfirmed.body.toState).toBe('IN_TRANSIT');
+
+    const arrived = await request(server)
+      .post(`/shipping/${orderId}/arrived`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ expectedStateVersion: installmentsConfirmed.body.stateVersion })
+      .expect(201);
+    expect(arrived.body.toState).toBe('ARRIVED_PORT');
+
+    const customsStarted = await request(server)
+      .post(`/customs-fees/${orderId}/start`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ expectedStateVersion: arrived.body.stateVersion })
+      .expect(201);
+    expect(customsStarted.body.toState).toBe('CUSTOMS_FEE_ADDED');
+
+    const fee = await request(server)
+      .post(`/customs-fees/${orderId}/fees`)
+      .set('Authorization', `Bearer ${operatorToken}`)
+      .send({ label: 'Import duty', amountSar: 1200 })
+      .expect(201);
+
+    const feePublished = await request(server)
+      .post(`/customs-fees/${orderId}/fees/${fee.body.id}/approve`)
+      .set('Authorization', `Bearer ${accountantToken}`)
+      .send({ expectedStateVersion: customsStarted.body.stateVersion })
+      .expect(201);
+    expect(feePublished.body.toState).toBe('CUSTOMS_CUSTOMER_PAYS');
+
+    const feeAfterApproval = await db.selectFrom('customs_fee').select(['status', 'approved_by']).where('id', '=', fee.body.id).executeTakeFirstOrThrow();
+    expect(feeAfterApproval.status).toBe('PUBLISHED');
+    expect(feeAfterApproval.approved_by).toBe(ACCOUNTANT_ID);
+
+    const proofUploaded = await request(server)
+      .post(`/customs-fees/${orderId}/pay-and-upload-proof`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ fileUrl: 'customs-proof.pdf', expectedStateVersion: feePublished.body.stateVersion })
+      .expect(201);
+    expect(proofUploaded.body.toState).toBe('CUSTOMS_FEE_PROOF_UPLOADED');
+
+    const feeVerified = await request(server)
+      .post(`/customs-fees/${orderId}/verify`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ expectedStateVersion: proofUploaded.body.stateVersion })
+      .expect(201);
+    expect(feeVerified.body.toState).toBe('CUSTOMS_FEE_VERIFIED');
+
+    const finalDelivery = await request(server)
+      .post(`/customs-fees/${orderId}/no-more-fees`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ expectedStateVersion: feeVerified.body.stateVersion })
+      .expect(201);
+    expect(finalDelivery.body.toState).toBe('FINAL_DELIVERY');
+
+    const signed = await request(server)
+      .post(`/delivery/${orderId}/sign`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ expectedStateVersion: finalDelivery.body.stateVersion })
+      .expect(201);
+    expect(signed.body.toState).toBe('CUSTOMER_SIGNED');
+
+    const completed = await request(server)
+      .post(`/ratings/${orderId}`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ score: 5, notes: 'Excellent supplier', expectedStateVersion: signed.body.stateVersion })
+      .expect(201);
+    expect(completed.body.toState).toBe('COMPLETED');
+
+    const order = await db.selectFrom('order').select(['current_state']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    expect(order.current_state).toBe('COMPLETED');
+
+    const rating = await db.selectFrom('supplier_rating').selectAll().where('order_id', '=', orderId).executeTakeFirstOrThrow();
+    expect(rating.score).toBe(5);
+    expect(rating.phase).toBe('POST_CONTRACT');
+    expect(rating.registered_supplier_id).toBe(SUPPLIER_1_ID);
+
+    const chain = await request(server).get('/audit/verify-chain').set('Authorization', `Bearer ${ownerToken}`).expect(200);
+    expect(chain.body.intact).toBe(true);
+  });
+
+  it('rejects a customs-fee approver who is the same admin that created the draft, and one who is only an OPERATOR', async () => {
+    const { orderId } = await createOrderAtProdDesignSubmitted();
+    // Fast-forward straight to ARRIVED_PORT — this test's focus is the customs four-eyes check, not re-deriving production/shipping.
+    await db.updateTable('order').set({ current_state: 'ARRIVED_PORT', state_version: 999 }).where('id', '=', orderId).execute();
+
+    await request(server).post(`/customs-fees/${orderId}/start`).set('Authorization', `Bearer ${ownerToken}`).send({ expectedStateVersion: 999 }).expect(201);
+
+    // Created by ACCOUNTANT this time — a valid final-approver role — so the
+    // self-approval attempt below is rejected by the "different person" rule
+    // itself (400), not just the role check.
+    const fee = await request(server)
+      .post(`/customs-fees/${orderId}/fees`)
+      .set('Authorization', `Bearer ${accountantToken}`)
+      .send({ label: 'Import duty', amountSar: 500 })
+      .expect(201);
+
+    const selfApprove = await request(server)
+      .post(`/customs-fees/${orderId}/fees/${fee.body.id}/approve`)
+      .set('Authorization', `Bearer ${accountantToken}`)
+      .send({ expectedStateVersion: 1000 });
+    expect(selfApprove.status).toBe(400);
+
+    // A different person, but only an OPERATOR — CUSTOMS_FEE_MANAGE.finalApproverRoles is [OWNER, ACCOUNTANT] only.
+    const wrongRoleApprove = await request(server)
+      .post(`/customs-fees/${orderId}/fees/${fee.body.id}/approve`)
+      .set('Authorization', `Bearer ${operatorToken}`)
+      .send({ expectedStateVersion: 1000 });
+    expect(wrongRoleApprove.status).toBe(403);
+
+    const feeAfter = await db.selectFrom('customs_fee').select(['status', 'approved_by']).where('id', '=', fee.body.id).executeTakeFirstOrThrow();
+    expect(feeAfter.status).toBe('DRAFT');
+    expect(feeAfter.approved_by).toBeNull();
+  });
+
+  it('auto-escalates from ESCALATION_REMINDER to ESCALATION_ESCALATED when ESCALATION_TIMEOUT fires, and lets the right party respond before that', async () => {
+    const { orderId, stateVersion } = await createOrderAtProdDesignSubmitted();
+
+    // PRODUCTION_SLA_MS=3000 in env.setup.js — real wait for the customer's own review-window timer to expire.
+    const designed = await request(server)
+      .post(`/production/${orderId}/design`)
+      .set('Authorization', `Bearer ${supplier1Token}`)
+      .send({ kind: 'image', fileUrl: 'design.png', expectedStateVersion: stateVersion })
+      .expect(201);
+    expect(designed.body.toState).toBe('PROD_CHECKPOINT_1');
+
+    await waitForState(orderId, 'ESCALATION_REMINDER'); // let the real CUSTOMER_SLA timer fire -> customer_sla_expired
+
+    const escalated = await db.selectFrom('order').select(['current_state', 'active_escalation_id', 'hold_type']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    expect(escalated.current_state).toBe('ESCALATION_REMINDER');
+    expect(escalated.hold_type).toBe('ESCALATION');
+    expect(escalated.active_escalation_id).not.toBeNull();
+
+    const escalation = await db.selectFrom('escalation').selectAll().where('id', '=', escalated.active_escalation_id!).executeTakeFirstOrThrow();
+    expect(escalation.actor).toBe('CUSTOMER_APPROVAL'); // resolved automatically by build-guard-context.ts, no manual ctxOverride anywhere
+
+    // The wrong party (supplier) cannot respond to a customer-approval escalation —
+    // rejected by requireEscalationActor (422), not a stale-version 409, since we
+    // pass the real current version.
+    const orderDuringReminder = await db.selectFrom('order').select(['state_version']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    const wrongParty = await request(server)
+      .post(`/escalation/${orderId}/supplier-responds`)
+      .set('Authorization', `Bearer ${supplier1Token}`)
+      .send({ expectedStateVersion: orderDuringReminder.state_version });
+    expect(wrongParty.status).toBe(422);
+
+    await waitForState(orderId, 'ESCALATION_ESCALATED'); // let the real ESCALATION_TIMEOUT timer fire -> no_response_timeout
+
+    const furtherEscalated = await db.selectFrom('order').select(['current_state']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    expect(furtherEscalated.current_state).toBe('ESCALATION_ESCALATED');
+
+    const escalationAfter = await db.selectFrom('escalation').select(['escalated_at']).where('order_id', '=', orderId).executeTakeFirstOrThrow();
+    expect(escalationAfter.escalated_at).not.toBeNull(); // same row, stamped in-place — not a second escalation row opened
+
+    // The customer can still respond and resume at the exact frozen checkpoint.
+    const responded = await request(server)
+      .post(`/escalation/${orderId}/customer-responds`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ expectedStateVersion: (await db.selectFrom('order').select(['state_version']).where('id', '=', orderId).executeTakeFirstOrThrow()).state_version });
+    expect(responded.status).toBe(201);
+    expect(responded.body.toState).toBe('PROD_CHECKPOINT_1');
+
+    const resolved = await db.selectFrom('order').select(['hold_type', 'active_escalation_id']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    expect(resolved.hold_type).toBe('NONE');
+    expect(resolved.active_escalation_id).toBeNull();
   });
 });

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { Kysely } from 'kysely';
 import { ActorRef, PermissionAction } from '@apex/domain';
 import { KYSELY } from '../database/database.module';
@@ -10,6 +11,7 @@ import { TransitionRejectedError } from '../transition-engine/transition-engine.
 import { FinancialApprovalService } from '../financial-approval/financial-approval.service';
 import { NotifyTransferDto } from './dto/notify-transfer.dto';
 import { UploadReceiptDto } from './dto/upload-receipt.dto';
+import { AppConfig } from '../config/configuration';
 
 const SYSTEM: ActorRef = { role: 'SYSTEM', id: null };
 const SUPPLIER_PAYMENT_VERIFICATION: PermissionAction = 'SUPPLIER_PAYMENT_ADMIN_VERIFICATION';
@@ -21,6 +23,7 @@ export class PaymentsService {
     private readonly uow: UnitOfWork,
     private readonly engine: TransitionEngineService,
     private readonly financialApproval: FinancialApprovalService,
+    private readonly config: ConfigService<AppConfig, true>,
   ) {}
 
   private async assertSupplierOwnsOrder(orderId: string, supplierId: string) {
@@ -224,6 +227,8 @@ export class PaymentsService {
         event: 'continue',
         actor: SYSTEM,
         expectedStateVersion: revealed.stateVersion,
+        // Harmless if this lands on LOADING_SHIPPING instead (requireNoProductionOversight) — ctx field is simply unused there.
+        ctxOverrides: { productionSlaMs: this.config.get('productionSlaMs', { infer: true }) },
       });
       return { outcome, revealed, routed };
     } catch (err) {

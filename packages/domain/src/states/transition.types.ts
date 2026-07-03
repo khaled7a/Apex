@@ -31,6 +31,10 @@ export interface GuardContext {
   offerCount?: number; // used by REG_BIDS_COLLECTING timeout guard
   /** Overrides the default 72h bidding window — lets ops shorten it per-environment (e.g. for staging/tests) without touching this table. */
   biddingDeadlineMs?: number;
+  /** Overrides the default 3-day escalation-response window — same shorten-for-tests purpose as biddingDeadlineMs. */
+  escalationTimeoutMs?: number;
+  /** Overrides the default 5-day production-checkpoint SLA (CUSTOMER_SLA/SUPPLIER_SLA) — same shorten-for-tests purpose as biddingDeadlineMs. */
+  productionSlaMs?: number;
   escalationActor?: 'CUSTOMER_APPROVAL' | 'SUPPLIER_DELIVERABLE';
   /** The frozen state to resume into, snapshotted when a dispute/escalation opened (state-machine.md §8). */
   resumeTargetState?: OrderState;

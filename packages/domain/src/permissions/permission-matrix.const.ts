@@ -80,6 +80,7 @@ export const PERMISSION_MATRIX: readonly PermissionRule[] = [
     action: 'CUSTOMS_FEE_MANAGE',
     allowedRoles: ['ADMIN_OWNER', 'ADMIN_OPERATOR', 'ADMIN_ACCOUNTANT'],
     requiresFourEyes: true,
+    finalApproverRoles: ['ADMIN_OWNER', 'ADMIN_ACCOUNTANT'],
     note: 'إدخال/تحديث رسوم التخليص — OPERATOR ينشئ، ACCOUNTANT/OWNER يعتمد قبل النشر للعميل',
   },
   {

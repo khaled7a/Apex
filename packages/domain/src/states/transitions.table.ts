@@ -288,6 +288,11 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     allowedRoles: ['SYSTEM'],
     guards: [requireProductionOversight],
     to: 'PROD_DESIGN_SUBMITTED',
+    // [إصلاح] discovered during v2 planning: nothing ever scheduled a
+    // SUPPLIER_SLA timer here even though supplier_sla_expired (below) exists
+    // as an exit from PROD_DESIGN_SUBMITTED — the supplier's own
+    // design-upload deadline could never actually fire.
+    schedulesTimer: (ctx) => ({ type: 'SUPPLIER_SLA', delayMs: ctx.productionSlaMs ?? 5 * 24 * 60 * 60 * 1000 }),
   },
   {
     from: 'IDENTITY_REVEALED',
@@ -303,7 +308,8 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     event: 'supplier_uploads_design',
     allowedRoles: ['SUPPLIER'],
     to: 'PROD_CHECKPOINT_1',
-    schedulesTimer: () => ({ type: 'CUSTOMER_SLA', delayMs: 5 * 24 * 60 * 60 * 1000 }),
+    cancelsTimers: ['SUPPLIER_SLA'],
+    schedulesTimer: (ctx) => ({ type: 'CUSTOMER_SLA', delayMs: ctx.productionSlaMs ?? 5 * 24 * 60 * 60 * 1000 }),
   },
   // [إصلاح] supplier SLA — symmetric to the customer SLA below, did not exist before.
   {
@@ -311,6 +317,7 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     event: 'supplier_sla_expired',
     allowedRoles: ['SYSTEM'],
     to: 'ESCALATION_REMINDER',
+    schedulesTimer: (ctx) => ({ type: 'ESCALATION_TIMEOUT', delayMs: ctx.escalationTimeoutMs ?? 3 * 24 * 60 * 60 * 1000 }),
   },
   {
     from: 'PROD_CHECKPOINT_1',
@@ -318,6 +325,8 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     allowedRoles: ['CUSTOMER'],
     to: 'PROD_FULL_PRODUCTION',
     cancelsTimers: ['CUSTOMER_SLA'],
+    // [إصلاح] same missing-schedule gap as IDENTITY_REVEALED->PROD_DESIGN_SUBMITTED — supplier_sla_expired existed as an exit from PROD_FULL_PRODUCTION with nothing ever scheduling the timer it depends on.
+    schedulesTimer: (ctx) => ({ type: 'SUPPLIER_SLA', delayMs: ctx.productionSlaMs ?? 5 * 24 * 60 * 60 * 1000 }),
   },
   // [إصلاح] explicit rejection, distinct from silent timeout.
   {
@@ -332,9 +341,15 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     event: 'supplier_resubmits',
     allowedRoles: ['SUPPLIER'],
     to: 'PROD_CHECKPOINT_1',
-    schedulesTimer: () => ({ type: 'CUSTOMER_SLA', delayMs: 5 * 24 * 60 * 60 * 1000 }),
+    schedulesTimer: (ctx) => ({ type: 'CUSTOMER_SLA', delayMs: ctx.productionSlaMs ?? 5 * 24 * 60 * 60 * 1000 }),
   },
-  { from: 'PROD_CHECKPOINT_1', event: 'customer_sla_expired', allowedRoles: ['SYSTEM'], to: 'ESCALATION_REMINDER' },
+  {
+    from: 'PROD_CHECKPOINT_1',
+    event: 'customer_sla_expired',
+    allowedRoles: ['SYSTEM'],
+    to: 'ESCALATION_REMINDER',
+    schedulesTimer: (ctx) => ({ type: 'ESCALATION_TIMEOUT', delayMs: ctx.escalationTimeoutMs ?? 3 * 24 * 60 * 60 * 1000 }),
+  },
   {
     from: 'PROD_FULL_PRODUCTION',
     event: 'supplier_uploads_qc',
@@ -343,13 +358,19 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     cancelsTimers: ['SUPPLIER_SLA'],
   },
   // [إصلاح] supplier SLA on the (potentially long) full-production silence window.
-  { from: 'PROD_FULL_PRODUCTION', event: 'supplier_sla_expired', allowedRoles: ['SYSTEM'], to: 'ESCALATION_REMINDER' },
+  {
+    from: 'PROD_FULL_PRODUCTION',
+    event: 'supplier_sla_expired',
+    allowedRoles: ['SYSTEM'],
+    to: 'ESCALATION_REMINDER',
+    schedulesTimer: (ctx) => ({ type: 'ESCALATION_TIMEOUT', delayMs: ctx.escalationTimeoutMs ?? 3 * 24 * 60 * 60 * 1000 }),
+  },
   {
     from: 'PROD_QC_SUBMITTED',
     event: 'continue',
     allowedRoles: ['SYSTEM'],
     to: 'PROD_CHECKPOINT_2',
-    schedulesTimer: () => ({ type: 'CUSTOMER_SLA', delayMs: 5 * 24 * 60 * 60 * 1000 }),
+    schedulesTimer: (ctx) => ({ type: 'CUSTOMER_SLA', delayMs: ctx.productionSlaMs ?? 5 * 24 * 60 * 60 * 1000 }),
   },
   {
     from: 'PROD_CHECKPOINT_2',
@@ -370,9 +391,15 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     event: 'supplier_resubmits_qc',
     allowedRoles: ['SUPPLIER'],
     to: 'PROD_QC_SUBMITTED',
-    schedulesTimer: () => ({ type: 'CUSTOMER_SLA', delayMs: 5 * 24 * 60 * 60 * 1000 }),
+    schedulesTimer: (ctx) => ({ type: 'CUSTOMER_SLA', delayMs: ctx.productionSlaMs ?? 5 * 24 * 60 * 60 * 1000 }),
   },
-  { from: 'PROD_CHECKPOINT_2', event: 'customer_sla_expired', allowedRoles: ['SYSTEM'], to: 'ESCALATION_REMINDER' },
+  {
+    from: 'PROD_CHECKPOINT_2',
+    event: 'customer_sla_expired',
+    allowedRoles: ['SYSTEM'],
+    to: 'ESCALATION_REMINDER',
+    schedulesTimer: (ctx) => ({ type: 'ESCALATION_TIMEOUT', delayMs: ctx.escalationTimeoutMs ?? 3 * 24 * 60 * 60 * 1000 }),
+  },
 
   // ---- Escalation (generalized to both customer and supplier) ----
   {
@@ -382,6 +409,7 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     guards: [requireEscalationActor('CUSTOMER_APPROVAL')],
     to: 'ESCALATION_REMINDER', // placeholder, overridden below
     resolveDynamicTarget: (ctx) => ctx.resumeTargetState ?? 'PROD_CHECKPOINT_1',
+    cancelsTimers: ['ESCALATION_TIMEOUT'],
   },
   {
     from: 'ESCALATION_REMINDER',
@@ -389,6 +417,7 @@ export const TRANSITIONS: readonly TransitionRow[] = [
     allowedRoles: ['SUPPLIER'],
     guards: [requireEscalationActor('SUPPLIER_DELIVERABLE')],
     to: 'ESCALATION_REMINDER',
+    cancelsTimers: ['ESCALATION_TIMEOUT'],
     resolveDynamicTarget: (ctx) => ctx.resumeTargetState ?? 'PROD_DESIGN_SUBMITTED',
   },
   { from: 'ESCALATION_REMINDER', event: 'no_response_timeout', allowedRoles: ['SYSTEM'], to: 'ESCALATION_ESCALATED' },

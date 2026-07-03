@@ -207,6 +207,7 @@ export interface Offer {
 
 export interface Order {
   active_dispute_id: string | null;
+  active_escalation_id: string | null;
   created_at: Generated<Timestamp>;
   current_state: Generated<OrderState>;
   customer_id: string;

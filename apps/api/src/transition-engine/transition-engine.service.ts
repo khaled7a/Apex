@@ -7,7 +7,7 @@ import { UnitOfWork } from '../database/unit-of-work';
 import { AuditLogService } from '../audit/audit-log.service';
 import { buildGuardContext } from './build-guard-context';
 import { StaleStateError, TransitionRejectedError } from './transition-engine.errors';
-import { DISPUTE_TYPE_BY_STATE, isDisputeState, isEscalationState } from './hold-state.util';
+import { DISPUTE_TYPE_BY_STATE, ESCALATION_ACTOR_BY_EVENT, isDisputeState, isEscalationState } from './hold-state.util';
 import { TIMER_SCHEDULER, TimerSchedulerPort } from '../scheduler/timer-scheduler.port';
 
 export interface TransitionRequest {
@@ -137,6 +137,42 @@ export class TransitionEngineService {
       newActiveDisputeId = null;
     }
 
+    // Symmetric to the dispute bookkeeping above — discovered during v2
+    // planning that no code anywhere populated ctx.escalationActor, making
+    // requireEscalationActor unimplementable end-to-end. Creating the
+    // `escalation` row here (keyed by which SLA-expiry event fired) lets
+    // buildGuardContext resolve it automatically via active_escalation_id,
+    // with zero per-caller wiring needed.
+    let newActiveEscalationId = order.active_escalation_id;
+    if (enteringEscalation && !order.active_escalation_id) {
+      const escalationActor = ESCALATION_ACTOR_BY_EVENT[request.event];
+      if (escalationActor) {
+        const created = await trx
+          .insertInto('escalation')
+          .values({
+            order_id: order.id,
+            actor: escalationActor,
+            escalated_at: toState === 'ESCALATION_ESCALATED' ? new Date() : null,
+            reminder_sent_at: toState === 'ESCALATION_REMINDER' ? new Date() : null,
+          })
+          .returning('id')
+          .executeTakeFirstOrThrow();
+        newActiveEscalationId = created.id;
+      }
+    } else if (enteringEscalation && order.active_escalation_id && toState === 'ESCALATION_ESCALATED') {
+      // Same escalation, deeper tier (no_response_timeout fired) — stamp
+      // escalated_at on the existing row instead of opening a second one.
+      await trx.updateTable('escalation').set({ escalated_at: new Date() }).where('id', '=', order.active_escalation_id).execute();
+    }
+    if (leavingHold && order.active_escalation_id) {
+      await trx
+        .updateTable('escalation')
+        .set({ resolved_at: new Date(), outcome: 'RESPONDED' })
+        .where('id', '=', order.active_escalation_id)
+        .execute();
+      newActiveEscalationId = null;
+    }
+
     // ---- the atomic financial event: lock non-refundability + start the manufacturing clock ----
     // (state-machine.md's "atomic event" principle — this must not be two separate writes.)
     let financialCommitmentStartedAt = order.financial_commitment_started_at;
@@ -162,6 +198,7 @@ export class TransitionEngineService {
         hold_type: newHoldType,
         resume_target_state: newResumeTargetState,
         active_dispute_id: newActiveDisputeId,
+        active_escalation_id: newActiveEscalationId,
         financial_commitment_started_at: financialCommitmentStartedAt,
       })
       .where('id', '=', order.id)

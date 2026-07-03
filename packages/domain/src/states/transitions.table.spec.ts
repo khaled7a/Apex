@@ -224,4 +224,63 @@ describe('computeTransition — critical business rules', () => {
     });
     expect(result).toMatchObject({ kind: 'ACCEPTED', toState: 'ESCALATION_REMINDER' });
   });
+
+  it('entering ESCALATION_REMINDER schedules ESCALATION_TIMEOUT — the gap that previously left orders stuck there forever', () => {
+    const result = computeTransition(TRANSITIONS, {
+      currentState: 'PROD_CHECKPOINT_1',
+      event: 'customer_sla_expired',
+      actor: { role: 'SYSTEM', id: null },
+      ctx: makeCtx({ currentState: 'PROD_CHECKPOINT_1' }),
+    });
+    expect(result.kind).toBe('ACCEPTED');
+    if (result.kind !== 'ACCEPTED') return;
+    const directive = result.row.schedulesTimer?.(makeCtx({ currentState: 'PROD_CHECKPOINT_1', escalationTimeoutMs: 999 }));
+    expect(directive).toEqual({ type: 'ESCALATION_TIMEOUT', delayMs: 999 });
+  });
+
+  it('customer_responds/supplier_responds from ESCALATION_REMINDER cancel the ESCALATION_TIMEOUT timer', () => {
+    const customerResult = computeTransition(TRANSITIONS, {
+      currentState: 'ESCALATION_REMINDER',
+      event: 'customer_responds',
+      actor: { role: 'CUSTOMER', id: 'c1' },
+      ctx: makeCtx({ currentState: 'ESCALATION_REMINDER', escalationActor: 'CUSTOMER_APPROVAL', resumeTargetState: 'PROD_CHECKPOINT_1' }),
+    });
+    expect(customerResult.kind).toBe('ACCEPTED');
+    if (customerResult.kind === 'ACCEPTED') expect(customerResult.row.cancelsTimers).toContain('ESCALATION_TIMEOUT');
+
+    const supplierResult = computeTransition(TRANSITIONS, {
+      currentState: 'ESCALATION_REMINDER',
+      event: 'supplier_responds',
+      actor: { role: 'SUPPLIER', id: 's1' },
+      ctx: makeCtx({ currentState: 'ESCALATION_REMINDER', escalationActor: 'SUPPLIER_DELIVERABLE', resumeTargetState: 'PROD_DESIGN_SUBMITTED' }),
+    });
+    expect(supplierResult.kind).toBe('ACCEPTED');
+    if (supplierResult.kind === 'ACCEPTED') expect(supplierResult.row.cancelsTimers).toContain('ESCALATION_TIMEOUT');
+  });
+
+  it('entering PROD_DESIGN_SUBMITTED schedules SUPPLIER_SLA — previously referenced by cancelsTimers/supplier_sla_expired but never actually scheduled', () => {
+    const result = computeTransition(TRANSITIONS, {
+      currentState: 'IDENTITY_REVEALED',
+      event: 'continue',
+      actor: { role: 'SYSTEM', id: null },
+      ctx: makeCtx({ currentState: 'IDENTITY_REVEALED', serviceType: { includesSourcing: true, includesIdentityManagement: true, includesProductionOversight: true } }),
+    });
+    expect(result).toMatchObject({ kind: 'ACCEPTED', toState: 'PROD_DESIGN_SUBMITTED' });
+    if (result.kind !== 'ACCEPTED') return;
+    const directive = result.row.schedulesTimer?.(makeCtx({ currentState: 'IDENTITY_REVEALED' }));
+    expect(directive).toMatchObject({ type: 'SUPPLIER_SLA' });
+  });
+
+  it('supplier_uploads_design cancels its own SUPPLIER_SLA timer while scheduling the customer review CUSTOMER_SLA', () => {
+    const result = computeTransition(TRANSITIONS, {
+      currentState: 'PROD_DESIGN_SUBMITTED',
+      event: 'supplier_uploads_design',
+      actor: { role: 'SUPPLIER', id: 's1' },
+      ctx: makeCtx({ currentState: 'PROD_DESIGN_SUBMITTED' }),
+    });
+    expect(result).toMatchObject({ kind: 'ACCEPTED', toState: 'PROD_CHECKPOINT_1' });
+    if (result.kind !== 'ACCEPTED') return;
+    expect(result.row.cancelsTimers).toContain('SUPPLIER_SLA');
+    expect(result.row.schedulesTimer?.(makeCtx({ currentState: 'PROD_DESIGN_SUBMITTED' }))).toMatchObject({ type: 'CUSTOMER_SLA' });
+  });
 });

@@ -7,4 +7,6 @@ process.env.JWT_CUSTOMER_SECRET = 'test-customer-secret';
 process.env.JWT_SUPPLIER_SECRET = 'test-supplier-secret';
 process.env.JWT_ADMIN_SECRET = 'test-admin-secret';
 process.env.BIDDING_DEADLINE_MS = '3000';
+process.env.PRODUCTION_SLA_MS = '3000';
+process.env.ESCALATION_TIMEOUT_MS = '3000';
 process.env.PORT = '0';

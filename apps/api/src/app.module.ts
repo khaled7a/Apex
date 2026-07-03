@@ -16,6 +16,11 @@ import { BiddingModule } from './bidding/bidding.module';
 import { ContractsModule } from './contracts/contracts.module';
 import { PaymentsModule } from './payments/payments.module';
 import { DisputesModule } from './disputes/disputes.module';
+import { ProductionModule } from './production/production.module';
+import { EscalationModule } from './escalation/escalation.module';
+import { ShippingModule } from './shipping/shipping.module';
+import { CustomsFeesModule } from './customs-fees/customs-fees.module';
+import { RatingsModule } from './ratings/ratings.module';
 
 @Module({
   imports: [
@@ -31,6 +36,11 @@ import { DisputesModule } from './disputes/disputes.module';
     ContractsModule,
     PaymentsModule,
     DisputesModule,
+    ProductionModule,
+    EscalationModule,
+    ShippingModule,
+    CustomsFeesModule,
+    RatingsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_INTERCEPTOR, useClass: DbTransactionInterceptor }],

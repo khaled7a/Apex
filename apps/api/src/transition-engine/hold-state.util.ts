@@ -19,6 +19,18 @@ export const DISPUTE_TYPE_BY_STATE: Partial<Record<OrderState, string>> = {
   DISPUTE_MANDATORY_REFUND: 'MANDATORY_REFUND',
 };
 
+/**
+ * Which party is being escalated is a property of the EVENT that entered
+ * ESCALATION_REMINDER (customer_sla_expired vs supplier_sla_expired), not of
+ * the destination state — both land on the same ESCALATION_REMINDER/
+ * ESCALATION_ESCALATED states regardless of who is being chased. Mirrors
+ * DISPUTE_TYPE_BY_STATE's role, just keyed by event instead of state.
+ */
+export const ESCALATION_ACTOR_BY_EVENT: Record<string, 'CUSTOMER_APPROVAL' | 'SUPPLIER_DELIVERABLE'> = {
+  customer_sla_expired: 'CUSTOMER_APPROVAL',
+  supplier_sla_expired: 'SUPPLIER_DELIVERABLE',
+};
+
 export function isDisputeState(state: OrderState): boolean {
   return DISPUTE_STATES.includes(state);
 }

@@ -32,7 +32,7 @@ export class PgBossTimerScheduler implements TimerSchedulerPort, OnModuleInit, O
   private readonly boss: PgBoss;
 
   constructor(
-    config: ConfigService<AppConfig, true>,
+    private readonly config: ConfigService<AppConfig, true>,
     @Inject(KYSELY) private readonly db: Kysely<DB>,
     private readonly uow: UnitOfWork,
     // Resolved lazily in handleDueTimer(), NOT injected in this constructor:
@@ -112,13 +112,25 @@ export class PgBossTimerScheduler implements TimerSchedulerPort, OnModuleInit, O
         offerCount = Number(row?.count ?? 0);
       }
 
+      // customer_sla_expired/supplier_sla_expired land on ESCALATION_REMINDER,
+      // whose transition rows schedule the next-tier ESCALATION_TIMEOUT timer
+      // using ctx.escalationTimeoutMs — same shorten-for-tests mechanism as
+      // ctx.biddingDeadlineMs for BIDDING_DEADLINE.
+      const escalationTimeoutMs =
+        data.timerType === 'CUSTOMER_SLA' || data.timerType === 'SUPPLIER_SLA'
+          ? this.config.get('escalationTimeoutMs', { infer: true })
+          : undefined;
+
       try {
         await this.engine.transition({
           orderId: data.orderId,
           event,
           actor: { role: 'SYSTEM', id: null },
           expectedStateVersion: timer.expected_state_version,
-          ctxOverrides: offerCount != null ? { offerCount } : undefined,
+          ctxOverrides: {
+            ...(offerCount != null ? { offerCount } : undefined),
+            ...(escalationTimeoutMs != null ? { escalationTimeoutMs } : undefined),
+          },
         });
       } catch (err) {
         // A stale-state or rejected transition here means the order moved on
