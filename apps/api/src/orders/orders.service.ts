@@ -1,13 +1,23 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Kysely } from 'kysely';
-import { ActorRef } from '@apex/domain';
+import { ActorRef, ADMIN_ACTIONABLE_STATES, OrderState } from '@apex/domain';
 import { KYSELY } from '../database/database.module';
-import { DB } from '../database/db.types';
+import { DB, HoldType } from '../database/db.types';
 import { UnitOfWork } from '../database/unit-of-work';
 import { TransitionEngineService } from '../transition-engine/transition-engine.service';
 import { ApproveOrderDto } from './dto/approve-order.dto';
 import { AppConfig } from '../config/configuration';
+import { ADMIN_QUEUE_CATEGORY } from './admin-queue-category.const';
+
+export interface ListAllOrdersFilters {
+  state?: string;
+  holdType?: string;
+  customerId?: string;
+  supplierId?: string;
+  page?: number;
+  pageSize?: number;
+}
 
 const SYSTEM: ActorRef = { role: 'SYSTEM', id: null };
 
@@ -197,6 +207,183 @@ export class OrdersService {
       : [];
 
     return { order, contract, paymentPlan, installments, productionUpdates, disputes, disputeClaims, escalations, renewals, timeline };
+  }
+
+  /**
+   * Before this, an admin could only act on an order they already knew the
+   * UUID of — GET /orders/:id existed but there was no way to browse or
+   * search. Capped pageSize (never trust a caller-supplied limit as-is).
+   */
+  async listAll(filters: ListAllOrdersFilters) {
+    const trx = this.uow.getClient();
+    const page = Math.max(1, filters.page ?? 1);
+    const pageSize = Math.min(100, Math.max(1, filters.pageSize ?? 25));
+
+    let query = trx.selectFrom('order').selectAll();
+    let countQuery = trx.selectFrom('order').select((eb) => eb.fn.countAll().as('count'));
+    if (filters.state) {
+      query = query.where('current_state', '=', filters.state as OrderState);
+      countQuery = countQuery.where('current_state', '=', filters.state as OrderState);
+    }
+    if (filters.holdType) {
+      query = query.where('hold_type', '=', filters.holdType as HoldType);
+      countQuery = countQuery.where('hold_type', '=', filters.holdType as HoldType);
+    }
+    if (filters.customerId) {
+      query = query.where('customer_id', '=', filters.customerId);
+      countQuery = countQuery.where('customer_id', '=', filters.customerId);
+    }
+    if (filters.supplierId) {
+      query = query.where('registered_supplier_id', '=', filters.supplierId);
+      countQuery = countQuery.where('registered_supplier_id', '=', filters.supplierId);
+    }
+
+    const [rows, countResult] = await Promise.all([
+      query
+        .orderBy('created_at', 'desc')
+        .limit(pageSize)
+        .offset((page - 1) * pageSize)
+        .execute(),
+      countQuery.executeTakeFirstOrThrow(),
+    ]);
+
+    return { rows, total: Number(countResult.count), page, pageSize };
+  }
+
+  /**
+   * ADMIN_QUEUE_CATEGORY (curated, deliberately narrower than
+   * ADMIN_ACTIONABLE_STATES — see that file's comment) drives both the
+   * WHERE clause and the per-row category annotation the dashboard tabs on.
+   */
+  async listNeedsAdminAction() {
+    const trx = this.uow.getClient();
+    const states = Object.keys(ADMIN_QUEUE_CATEGORY) as OrderState[];
+    const rows = await trx
+      .selectFrom('order')
+      .select(['id', 'service_type_id', 'current_state', 'hold_type', 'created_at', 'final_value_sar', 'customer_id'])
+      .where('current_state', 'in', states)
+      .orderBy('created_at', 'asc')
+      .execute();
+    return rows.map((row) => ({ ...row, category: ADMIN_QUEUE_CATEGORY[row.current_state] }));
+  }
+
+  /**
+   * The most permissive of the three detail reads — admin is allowed to see
+   * everything, including customer PII (deliberately included here, unlike
+   * getDetailForCustomer/getDetailForSupplier which each restrict on purpose).
+   * financialApprovals is a single query across all three order-scoped
+   * four-eyes actions (SUPPLIER_PAYMENT_ADMIN_VERIFICATION,
+   * DISPUTE_RESOLVE_MANDATORY_REFUND, EXTERNAL_SUPPLIER_FINAL_APPROVAL) since
+   * FinancialApprovalService always keys these by entityType:'order' — there
+   * is no need to first gather per-payment/per-dispute sub-entity ids.
+   */
+  async getDetailForAdmin(orderId: string) {
+    const trx = this.uow.getClient();
+    const order = await trx.selectFrom('order').selectAll().where('id', '=', orderId).executeTakeFirst();
+    if (!order) throw new NotFoundException(`order ${orderId} not found`);
+
+    const [
+      customer,
+      registeredSupplier,
+      externalSupplier,
+      offers,
+      contract,
+      productionUpdates,
+      shippingDocuments,
+      customsFees,
+      disputes,
+      escalations,
+      renewals,
+      timeline,
+      financialApprovals,
+    ] = await Promise.all([
+      trx.selectFrom('customer').selectAll().where('id', '=', order.customer_id).executeTakeFirst(),
+      order.registered_supplier_id
+        ? trx.selectFrom('registered_supplier').selectAll().where('id', '=', order.registered_supplier_id).executeTakeFirst()
+        : Promise.resolve(undefined),
+      // external_supplier.order_id is set at creation time (external-suppliers.service.ts),
+      // before order.external_supplier_id itself gets populated at approve() time — query
+      // by order_id so the vetting card shows up even mid-vetting, not just after approval.
+      trx.selectFrom('external_supplier').selectAll().where('order_id', '=', orderId).executeTakeFirst(),
+      trx.selectFrom('offer').selectAll().where('order_id', '=', orderId).orderBy('submitted_at', 'asc').execute(),
+      trx.selectFrom('contract').selectAll().where('order_id', '=', orderId).executeTakeFirst(),
+      trx.selectFrom('production_update').selectAll().where('order_id', '=', orderId).orderBy('posted_at', 'asc').execute(),
+      trx.selectFrom('shipping_document').selectAll().where('order_id', '=', orderId).orderBy('uploaded_at', 'asc').execute(),
+      trx.selectFrom('customs_fee').selectAll().where('order_id', '=', orderId).execute(),
+      trx.selectFrom('dispute').selectAll().where('order_id', '=', orderId).execute(),
+      trx.selectFrom('escalation').selectAll().where('order_id', '=', orderId).execute(),
+      trx.selectFrom('agreement_renewal').selectAll().where('order_id', '=', orderId).execute(),
+      trx.selectFrom('state_transition_log').selectAll().where('order_id', '=', orderId).orderBy('id', 'asc').execute(),
+      trx
+        .selectFrom('financial_approval')
+        .selectAll()
+        .where('entity_type', '=', 'order')
+        .where('entity_id', '=', orderId)
+        .where('action', 'in', ['SUPPLIER_PAYMENT_ADMIN_VERIFICATION', 'DISPUTE_RESOLVE_MANDATORY_REFUND', 'EXTERNAL_SUPPLIER_FINAL_APPROVAL'])
+        .orderBy('submitted_at', 'desc')
+        .execute(),
+    ]);
+
+    const disputeClaims = disputes.length
+      ? await trx
+          .selectFrom('dispute_claim')
+          .selectAll()
+          .where(
+            'dispute_id',
+            'in',
+            disputes.map((d) => d.id),
+          )
+          .execute()
+      : [];
+
+    const paymentPlan = contract ? await trx.selectFrom('payment_plan').selectAll().where('contract_id', '=', contract.id).executeTakeFirst() : undefined;
+    const installments = paymentPlan
+      ? await trx.selectFrom('payment_installment').selectAll().where('payment_plan_id', '=', paymentPlan.id).orderBy('sequence_no', 'asc').execute()
+      : [];
+    const payments = installments.length
+      ? await trx
+          .selectFrom('payment')
+          .selectAll()
+          .where(
+            'installment_id',
+            'in',
+            installments.map((i) => i.id),
+          )
+          .execute()
+      : [];
+    const receipts = payments.length
+      ? await trx
+          .selectFrom('receipt')
+          .selectAll()
+          .where(
+            'payment_id',
+            'in',
+            payments.map((p) => p.id),
+          )
+          .execute()
+      : [];
+
+    return {
+      order,
+      customer,
+      registeredSupplier,
+      externalSupplier,
+      offers,
+      contract,
+      paymentPlan,
+      installments,
+      payments,
+      receipts,
+      productionUpdates,
+      shippingDocuments,
+      customsFees,
+      disputes,
+      disputeClaims,
+      escalations,
+      renewals,
+      timeline,
+      financialApprovals,
+    };
   }
 
   async submit(orderId: string, actor: ActorRef, expectedStateVersion: number) {

@@ -39,6 +39,17 @@ export interface AppConfig {
   frontendOrigin: string;
   /** Local-disk root for POST /uploads-stored files — see uploads.service.ts. */
   uploadsDir: string;
+  /**
+   * Which portal origin to embed in a password-reset link — one per actor
+   * type, since there are now three separate Next.js origins (customer,
+   * supplier, admin). Deliberately separate from frontendOrigin above
+   * (CORS-only, single-origin) rather than overloading it.
+   */
+  resetLinkOrigins: {
+    customer: string;
+    supplier: string;
+    admin: string;
+  };
 }
 
 function requireEnv(name: string): string {
@@ -79,5 +90,10 @@ export function loadConfig(): AppConfig {
     },
     frontendOrigin: process.env.FRONTEND_ORIGIN ?? 'http://localhost:3001',
     uploadsDir: process.env.UPLOADS_DIR ?? './uploads',
+    resetLinkOrigins: {
+      customer: process.env.FRONTEND_ORIGIN_CUSTOMER ?? 'http://localhost:3001',
+      supplier: process.env.FRONTEND_ORIGIN_SUPPLIER ?? 'http://localhost:3002',
+      admin: process.env.FRONTEND_ORIGIN_ADMIN ?? 'http://localhost:3003',
+    },
   };
 }

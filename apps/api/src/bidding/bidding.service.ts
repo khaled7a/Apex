@@ -161,6 +161,32 @@ export class BiddingService {
     return this.engine.transition({ orderId, event: 'republish', actor, expectedStateVersion });
   }
 
+  /**
+   * REG_BIDS_EXPIRED_NO_OFFERS had `extend_deadline`/`cancel_order` rows in
+   * the transition table from the start, but nothing in apps/api ever fired
+   * either event — an order that timed out with zero bids was permanently
+   * stuck with no controller action able to move it. Re-opens the same
+   * bidding window (schedulesTimer on this row re-reads biddingDeadlineMs).
+   */
+  async extendDeadline(orderId: string, actor: ActorRef, expectedStateVersion: number) {
+    return this.engine.transition({
+      orderId,
+      event: 'extend_deadline',
+      actor,
+      expectedStateVersion,
+      ctxOverrides: { biddingDeadlineMs: this.config.get('biddingDeadlineMs', { infer: true }) },
+    });
+  }
+
+  /**
+   * Covers both REG_BIDS_EXPIRED_NO_OFFERS and REG_NO_OFFER_SELECTED — the
+   * engine looks up the row by (fromState, event), so one endpoint serves
+   * both dead-end source states without needing to know which one it's in.
+   */
+  async cancel(orderId: string, actor: ActorRef, expectedStateVersion: number) {
+    return this.engine.transition({ orderId, event: 'cancel_order', actor, expectedStateVersion });
+  }
+
   async selectOffer(orderId: string, actor: ActorRef, offerId: string, expectedStateVersion: number) {
     const trx = this.uow.getClient();
     const offer = await trx

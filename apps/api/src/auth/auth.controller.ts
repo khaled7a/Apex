@@ -1,4 +1,4 @@
-import { Body, Controller, ForbiddenException, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, ForbiddenException, Get, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AuthService } from './auth.service';
 import { AdminJwtRole } from './jwt-payload.types';
@@ -6,6 +6,8 @@ import { Public } from './decorators/public.decorator';
 import { RegisterCustomerDto } from './dto/register-customer.dto';
 import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { CustomerAuthGuard } from './guards/customer-auth.guard';
 import { SupplierAuthGuard } from './guards/supplier-auth.guard';
 import { AdminAuthGuard } from './guards/admin-auth.guard';
@@ -92,6 +94,56 @@ export class RealAuthController {
   @UseGuards(AdminAuthGuard)
   async changeAdminPassword(@Req() req: RequestWithActor, @Body() dto: ChangePasswordDto) {
     await this.auth.changeAdminPassword(req.actor!.id!, dto.currentPassword, dto.newPassword);
+    return { ok: true };
+  }
+
+  /** AdminJwtStrategy only decodes {role, id} — the portal header ("مرحباً، فلان") needs a real profile fetch. */
+  @Get('admin/me')
+  @ApiBearerAuth()
+  @UseGuards(AdminAuthGuard)
+  adminMe(@Req() req: RequestWithActor) {
+    return this.auth.getAdminProfile(req.actor!.id!);
+  }
+
+  @Post('customer/forgot-password')
+  @Public()
+  async forgotCustomerPassword(@Body() dto: ForgotPasswordDto) {
+    await this.auth.forgotPassword('CUSTOMER', dto.email);
+    return { ok: true };
+  }
+
+  @Post('supplier/forgot-password')
+  @Public()
+  async forgotSupplierPassword(@Body() dto: ForgotPasswordDto) {
+    await this.auth.forgotPassword('SUPPLIER', dto.email);
+    return { ok: true };
+  }
+
+  @Post('admin/forgot-password')
+  @Public()
+  async forgotAdminPassword(@Body() dto: ForgotPasswordDto) {
+    await this.auth.forgotPassword('ADMIN', dto.email);
+    return { ok: true };
+  }
+
+  @Post('customer/reset-password')
+  @Public()
+  async resetCustomerPassword(@Body() dto: ResetPasswordDto) {
+    await this.auth.resetPassword('CUSTOMER', dto.token, dto.newPassword);
+    return { ok: true };
+  }
+
+  @Post('supplier/reset-password')
+  @Public()
+  async resetSupplierPassword(@Body() dto: ResetPasswordDto) {
+    await this.auth.resetPassword('SUPPLIER', dto.token, dto.newPassword);
+    return { ok: true };
+  }
+
+  @Post('admin/reset-password')
+  @Public()
+  async resetAdminPassword(@Body() dto: ResetPasswordDto) {
+    await this.auth.resetPassword('ADMIN', dto.token, dto.newPassword);
     return { ok: true };
   }
 }

@@ -25,6 +25,7 @@ export function createAdminDb(): Kysely<DB> {
 }
 
 const APPLICATION_TABLES = [
+  'password_reset_token',
   'refund_transaction',
   'dispute_claim',
   'dispute',

@@ -4,6 +4,7 @@
  */
 
 import type { ColumnType } from "kysely";
+import type { IPostgresInterval } from "postgres-interval";
 
 export type AdminRole = "ACCOUNTANT" | "OPERATOR" | "OWNER";
 
@@ -25,6 +26,8 @@ export type HoldType = "DISPUTE" | "ESCALATION" | "NONE" | "RENEWAL";
 
 export type Int8 = ColumnType<string, bigint | number | string, bigint | number | string>;
 
+export type Interval = ColumnType<IPostgresInterval, IPostgresInterval | number | string, IPostgresInterval | number | string>;
+
 export type Json = JsonValue;
 
 export type JsonArray = JsonValue[];
@@ -40,6 +43,8 @@ export type JsonValue = JsonArray | JsonObject | JsonPrimitive;
 export type Numeric = ColumnType<string, number | string, number | string>;
 
 export type OrderState = "AGREEMENT_CANCELLED_PENDING_RENEWAL" | "ARRIVED_PORT" | "CANCELLED" | "COMPLETED" | "CONTRACT_ADMIN_VERIFYING" | "CONTRACT_BANK_TRANSFER_DONE" | "CONTRACT_PAYMENT_PLAN_CREATED" | "CONTRACT_RECEIPT_REJECTED" | "CONTRACT_RECEIPT_UPLOADED" | "CONTRACT_SIGNED" | "CUSTOMER_SIGNED" | "CUSTOMS_CUSTOMER_PAYS" | "CUSTOMS_FEE_ADDED" | "CUSTOMS_FEE_PROOF_UPLOADED" | "CUSTOMS_FEE_VERIFIED" | "DISPUTE_DELAY" | "DISPUTE_MANDATORY_REFUND" | "DISPUTE_PAYMENT" | "DISPUTE_QUALITY" | "DISPUTE_RESOLVED" | "DISPUTE_SHIPPING" | "DRAFT" | "ESCALATION_ESCALATED" | "ESCALATION_REMINDER" | "EXT_VETTING_APPROVED" | "EXT_VETTING_DOCS" | "EXT_VETTING_REJECTED" | "FINAL_DELIVERY" | "IDENTITY_REVEALED" | "IN_TRANSIT" | "LOADING_SHIPPING" | "LOGISTICS_ONLY_SETUP" | "PAYMENT_INSTALLMENTS_PENDING" | "PAYMENT_PENDING_ADMIN_VERIFICATION" | "PAYMENT_PENDING_SUPPLIER_ACK" | "PROD_CHECKPOINT_1" | "PROD_CHECKPOINT_1_REJECTED" | "PROD_CHECKPOINT_2" | "PROD_CHECKPOINT_2_REJECTED" | "PROD_DESIGN_SUBMITTED" | "PROD_FULL_PRODUCTION" | "PROD_QC_SUBMITTED" | "REG_ADMIN_REVIEW_BIDS" | "REG_BIDS_COLLECTING" | "REG_BIDS_EXPIRED_NO_OFFERS" | "REG_CUSTOMER_SELECTS" | "REG_NO_OFFER_SELECTED" | "REG_PUBLISHED" | "REG_SHOWN_TO_CUSTOMER" | "RENEWAL_PENDING_ADMIN" | "RENEWAL_PENDING_SUPPLIER" | "RENEWAL_SUPPLIER_DECLINED" | "REVIEW_APPROVED" | "REVIEW_NEEDS_EDIT" | "REVIEW_PENDING" | "REVIEW_REJECTED" | "SHIPPING_DOCS" | "SUBMITTED" | "SUPPLIER_CHOICE" | "SUPPLIER_PAYMENT_CONFIRMED" | "SUPPLIER_RATED";
+
+export type PgbossJobState = "active" | "cancelled" | "completed" | "created" | "failed" | "retry";
 
 export type RatingPhase = "POST_CONTRACT" | "PRE_CONTRACT";
 
@@ -246,6 +251,16 @@ export interface Order {
   supplier_type: Generated<SupplierType>;
 }
 
+export interface PasswordResetToken {
+  actor_id: string;
+  actor_type: string;
+  created_at: Generated<Timestamp>;
+  expires_at: Timestamp;
+  id: Generated<string>;
+  token_hash: string;
+  used_at: Timestamp | null;
+}
+
 export interface Payment {
   amount_sar: Numeric;
   created_at: Generated<Timestamp>;
@@ -274,6 +289,91 @@ export interface PaymentPlan {
   created_by: string;
   id: Generated<string>;
   total_installments: number;
+}
+
+export interface PgbossArchive {
+  archived_on: Generated<Timestamp>;
+  completed_on: Timestamp | null;
+  created_on: Timestamp;
+  data: Json | null;
+  dead_letter: string | null;
+  expire_in: Interval;
+  id: string;
+  keep_until: Timestamp;
+  name: string;
+  output: Json | null;
+  policy: string | null;
+  priority: number;
+  retry_backoff: boolean;
+  retry_count: number;
+  retry_delay: number;
+  retry_limit: number;
+  singleton_key: string | null;
+  singleton_on: Timestamp | null;
+  start_after: Timestamp;
+  started_on: Timestamp | null;
+  state: PgbossJobState;
+}
+
+export interface PgbossJob {
+  completed_on: Timestamp | null;
+  created_on: Generated<Timestamp>;
+  data: Json | null;
+  dead_letter: string | null;
+  expire_in: Generated<Interval>;
+  id: Generated<string>;
+  keep_until: Generated<Timestamp>;
+  name: string;
+  output: Json | null;
+  policy: string | null;
+  priority: Generated<number>;
+  retry_backoff: Generated<boolean>;
+  retry_count: Generated<number>;
+  retry_delay: Generated<number>;
+  retry_limit: Generated<number>;
+  singleton_key: string | null;
+  singleton_on: Timestamp | null;
+  start_after: Generated<Timestamp>;
+  started_on: Timestamp | null;
+  state: Generated<PgbossJobState>;
+}
+
+export interface PgbossQueue {
+  created_on: Generated<Timestamp>;
+  dead_letter: string | null;
+  expire_seconds: number | null;
+  name: string;
+  partition_name: string | null;
+  policy: string | null;
+  retention_minutes: number | null;
+  retry_backoff: boolean | null;
+  retry_delay: number | null;
+  retry_limit: number | null;
+  updated_on: Generated<Timestamp>;
+}
+
+export interface PgbossSchedule {
+  created_on: Generated<Timestamp>;
+  cron: string;
+  data: Json | null;
+  name: string;
+  options: Json | null;
+  timezone: string | null;
+  updated_on: Generated<Timestamp>;
+}
+
+export interface PgbossSubscription {
+  created_on: Generated<Timestamp>;
+  event: string;
+  name: string;
+  updated_on: Generated<Timestamp>;
+}
+
+export interface PgbossVersion {
+  cron_on: Timestamp | null;
+  maintained_on: Timestamp | null;
+  monitored_on: Timestamp | null;
+  version: number;
 }
 
 export interface Pgmigrations {
@@ -439,9 +539,16 @@ export interface DB {
   notification_log: NotificationLog;
   offer: Offer;
   order: Order;
+  password_reset_token: PasswordResetToken;
   payment: Payment;
   payment_installment: PaymentInstallment;
   payment_plan: PaymentPlan;
+  "pgboss.archive": PgbossArchive;
+  "pgboss.job": PgbossJob;
+  "pgboss.queue": PgbossQueue;
+  "pgboss.schedule": PgbossSchedule;
+  "pgboss.subscription": PgbossSubscription;
+  "pgboss.version": PgbossVersion;
   pgmigrations: Pgmigrations;
   production_update: ProductionUpdate;
   receipt: Receipt;

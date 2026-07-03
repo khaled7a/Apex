@@ -43,6 +43,23 @@ export class AuditLogService {
   }
 
   /**
+   * Every audit_log row TransitionEngineService writes uses entity_type:'order'
+   * with entity_id set to the order's own id (see transition-engine.service.ts) —
+   * there are no per-payment/per-dispute/per-customs_fee rows to also gather,
+   * so a single equality filter is the complete per-order history.
+   */
+  async listForOrder(orderId: string) {
+    const trx = this.uow.getClient();
+    return trx
+      .selectFrom('audit_log')
+      .selectAll()
+      .where('entity_type', '=', 'order')
+      .where('entity_id', '=', orderId)
+      .orderBy('id', 'asc')
+      .execute();
+  }
+
+  /**
    * Recomputes the hash chain and reports the first row (if any) where it
    * breaks — proof the append-only guarantee holds. This intentionally
    * recomputes hashes *in SQL* using the exact same expression as

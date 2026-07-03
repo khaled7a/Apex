@@ -24,6 +24,7 @@ import { RatingsModule } from './ratings/ratings.module';
 import { RenewalsModule } from './renewals/renewals.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { UploadsModule } from './uploads/uploads.module';
+import { ExternalSuppliersModule } from './external-suppliers/external-suppliers.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { UploadsModule } from './uploads/uploads.module';
     RenewalsModule,
     NotificationsModule,
     UploadsModule,
+    ExternalSuppliersModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_INTERCEPTOR, useClass: DbTransactionInterceptor }],

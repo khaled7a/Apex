@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -9,12 +9,16 @@ import { AdminAuthGuard } from '../auth/guards/admin-auth.guard';
 import { PermissionMatrixGuard } from '../auth/guards/permission-matrix.guard';
 import { RequiresPermission } from '../auth/decorators/requires-permission.decorator';
 import { RequestWithActor } from '../auth/request-with-actor';
+import { AuditLogService } from '../audit/audit-log.service';
 
 @ApiTags('orders')
 @ApiBearerAuth()
 @Controller('orders')
 export class OrdersController {
-  constructor(private readonly orders: OrdersService) {}
+  constructor(
+    private readonly orders: OrdersService,
+    private readonly auditLog: AuditLogService,
+  ) {}
 
   @Post()
   @UseGuards(CustomerAuthGuard)
@@ -37,6 +41,33 @@ export class OrdersController {
     return this.orders.listAssignedToSupplier(req.actor!.id!);
   }
 
+  /** Admin-wide browse/search — before this there was no way to find an order without already knowing its id. */
+  @Get()
+  @UseGuards(AdminAuthGuard)
+  listAll(
+    @Query('state') state?: string,
+    @Query('holdType') holdType?: string,
+    @Query('customerId') customerId?: string,
+    @Query('supplierId') supplierId?: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+  ) {
+    return this.orders.listAll({
+      state,
+      holdType,
+      customerId,
+      supplierId,
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+    });
+  }
+
+  @Get('queue/needs-admin-action')
+  @UseGuards(AdminAuthGuard)
+  listNeedsAdminAction() {
+    return this.orders.listNeedsAdminAction();
+  }
+
   @Get(':id')
   @UseGuards(AdminAuthGuard)
   get(@Param('id') id: string) {
@@ -53,6 +84,18 @@ export class OrdersController {
   @UseGuards(SupplierAuthGuard)
   getDetailForSupplier(@Req() req: RequestWithActor, @Param('id') id: string) {
     return this.orders.getDetailForSupplier(id, req.actor!.id!);
+  }
+
+  @Get(':id/detail-for-admin')
+  @UseGuards(AdminAuthGuard)
+  getDetailForAdmin(@Param('id') id: string) {
+    return this.orders.getDetailForAdmin(id);
+  }
+
+  @Get(':id/audit-log')
+  @UseGuards(AdminAuthGuard)
+  getAuditLog(@Param('id') id: string) {
+    return this.auditLog.listForOrder(id);
   }
 
   @Post(':id/submit')

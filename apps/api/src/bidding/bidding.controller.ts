@@ -77,4 +77,17 @@ export class BiddingController {
   republish(@Req() req: RequestWithActor, @Param('orderId') orderId: string, @Body('expectedStateVersion') expectedStateVersion: number) {
     return this.bidding.republish(orderId, req.actor!, expectedStateVersion);
   }
+
+  @Post(':orderId/extend-deadline')
+  @UseGuards(AdminAuthGuard, PermissionMatrixGuard)
+  @RequiresPermission('ORDER_APPROVE_EDIT_REJECT')
+  extendDeadline(@Req() req: RequestWithActor, @Param('orderId') orderId: string, @Body('expectedStateVersion') expectedStateVersion: number) {
+    return this.bidding.extendDeadline(orderId, req.actor!, expectedStateVersion);
+  }
+
+  @Post(':orderId/cancel')
+  @UseGuards(AdminAuthGuard)
+  cancel(@Req() req: RequestWithActor, @Param('orderId') orderId: string, @Body('expectedStateVersion') expectedStateVersion: number) {
+    return this.bidding.cancel(orderId, req.actor!, expectedStateVersion);
+  }
 }

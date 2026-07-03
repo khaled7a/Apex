@@ -3,6 +3,7 @@ export * from './states/actor.types';
 export * from './states/transition.types';
 export * from './states/transitions.table';
 export * from './states/computeTransition';
+export * from './states/admin-queue.helper';
 export * from './guards/service-type.guard';
 export * from './guards/dispute-lock.guard';
 export * from './guards/bidding.guard';

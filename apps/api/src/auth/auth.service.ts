@@ -1,7 +1,8 @@
-import { ConflictException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import bcrypt from 'bcrypt';
+import { randomBytes, createHash } from 'node:crypto';
 import { Kysely } from 'kysely';
 import { KYSELY } from '../database/database.module';
 import { DB } from '../database/db.types';
@@ -11,8 +12,12 @@ import { AdminJwtRole } from './jwt-payload.types';
 import { RegisterCustomerDto } from './dto/register-customer.dto';
 import { CreateAdminDto } from './dto/create-admin.dto';
 import { CreateSupplierDto } from './dto/create-supplier.dto';
+import { EmailProvider } from '../notifications/providers/email.provider';
 
 const BCRYPT_ROUNDS = 12;
+const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
+
+export type ResetPasswordActorType = 'CUSTOMER' | 'SUPPLIER' | 'ADMIN';
 
 /**
  * DEV-ONLY token issuance (issue*Token below) mints a JWT for an *existing*
@@ -30,6 +35,7 @@ export class AuthService {
     private readonly config: ConfigService<AppConfig, true>,
     @Inject(KYSELY) private readonly db: Kysely<DB>,
     private readonly uow: UnitOfWork,
+    private readonly emailProvider: EmailProvider,
   ) {}
 
   issueCustomerToken(customerId: string): string {
@@ -86,10 +92,10 @@ export class AuthService {
     const trx = this.uow.getClient();
     const supplier = await trx
       .selectFrom('registered_supplier')
-      .select(['id', 'password_hash'])
+      .select(['id', 'password_hash', 'is_active'])
       .where('contact_email', '=', email)
       .executeTakeFirst();
-    await this.assertPasswordMatches(supplier?.password_hash ?? null, password);
+    await this.assertPasswordMatches(supplier?.is_active === false ? null : (supplier?.password_hash ?? null), password);
     return { token: this.issueSupplierToken(supplier!.id) };
   }
 
@@ -167,6 +173,136 @@ export class AuthService {
       .returning('id')
       .executeTakeFirstOrThrow();
     return { id: created.id };
+  }
+
+  /** Never selects password_hash — used by GET /admin/admins for both the accounts screen and the four-eyes approver picker. */
+  async listAdmins() {
+    const trx = this.uow.getClient();
+    return trx
+      .selectFrom('admin_user')
+      .select(['id', 'name', 'email', 'role', 'is_active', 'mfa_enabled', 'created_at'])
+      .orderBy('created_at', 'asc')
+      .execute();
+  }
+
+  async listSuppliers() {
+    const trx = this.uow.getClient();
+    return trx
+      .selectFrom('registered_supplier')
+      .select(['id', 'legal_name', 'contact_email', 'whatsapp_phone', 'is_active', 'created_at'])
+      .orderBy('created_at', 'asc')
+      .execute();
+  }
+
+  /** AdminJwtStrategy only decodes {role, id} from the token — the portal header and the "exclude myself" approver-picker logic both need a real name, not a JWT guess. */
+  async getAdminProfile(adminId: string) {
+    const trx = this.uow.getClient();
+    return trx
+      .selectFrom('admin_user')
+      .select(['id', 'name', 'email', 'role', 'is_active'])
+      .where('id', '=', adminId)
+      .executeTakeFirstOrThrow();
+  }
+
+  /**
+   * Two distinct real lockout vectors, not one: (a) an OWNER cannot
+   * deactivate *themselves* even if other OWNERs exist — a same-request
+   * footgun with no upside; (b) nobody can deactivate the *last* active
+   * OWNER, full stop, since ADMIN_ACCOUNT_MANAGE is OWNER-only — losing the
+   * last one means no one left who can create/reactivate any admin account
+   * without a manual DB fix.
+   */
+  async setAdminActive(targetId: string, actorId: string, isActive: boolean): Promise<void> {
+    const trx = this.uow.getClient();
+    if (!isActive) {
+      if (targetId === actorId) {
+        throw new BadRequestException('لا يمكنك إلغاء تفعيل حسابك الخاص');
+      }
+      const target = await trx.selectFrom('admin_user').select(['role', 'is_active']).where('id', '=', targetId).executeTakeFirstOrThrow();
+      if (target.role === 'OWNER' && target.is_active) {
+        const activeOwners = await trx
+          .selectFrom('admin_user')
+          .select((eb) => eb.fn.countAll().as('count'))
+          .where('role', '=', 'OWNER')
+          .where('is_active', '=', true)
+          .executeTakeFirstOrThrow();
+        if (Number(activeOwners.count) <= 1) {
+          throw new BadRequestException('لا يمكن إلغاء تفعيل آخر حساب OWNER نشط — سيؤدي ذلك إلى فقدان القدرة على إدارة الحسابات');
+        }
+      }
+    }
+    await trx.updateTable('admin_user').set({ is_active: isActive }).where('id', '=', targetId).execute();
+  }
+
+  /** No self-lockout risk here — supplier accounts aren't part of the RBAC-management chain, there's always an admin able to reactivate one. */
+  async setSupplierActive(targetId: string, isActive: boolean): Promise<void> {
+    const trx = this.uow.getClient();
+    await trx.updateTable('registered_supplier').set({ is_active: isActive }).where('id', '=', targetId).execute();
+  }
+
+  /**
+   * Always resolves the same way regardless of whether the email matched
+   * anything — no signal is ever returned that would let a caller enumerate
+   * which emails have accounts. Sends via EmailProvider directly (not
+   * NotificationsService, which is hard-wired to order-transition events).
+   */
+  async forgotPassword(actorType: ResetPasswordActorType, email: string): Promise<void> {
+    const trx = this.uow.getClient();
+    const actor = await this.findActiveActorByEmail(actorType, email);
+    if (actor) {
+      const rawToken = randomBytes(32).toString('hex');
+      const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+      await trx
+        .insertInto('password_reset_token')
+        .values({
+          actor_type: actorType,
+          actor_id: actor.id,
+          token_hash: tokenHash,
+          expires_at: new Date(Date.now() + RESET_TOKEN_TTL_MS),
+        })
+        .execute();
+
+      const origins = this.config.get('resetLinkOrigins', { infer: true });
+      const origin = actorType === 'CUSTOMER' ? origins.customer : actorType === 'SUPPLIER' ? origins.supplier : origins.admin;
+      const link = `${origin}/reset-password?token=${rawToken}`;
+      await this.emailProvider.send(email, `لإعادة تعيين كلمة المرور، افتح الرابط التالي (صالح لمدة 30 دقيقة): ${link}`);
+    }
+  }
+
+  async resetPassword(actorType: ResetPasswordActorType, token: string, newPassword: string): Promise<void> {
+    const trx = this.uow.getClient();
+    const tokenHash = createHash('sha256').update(token).digest('hex');
+    const row = await trx
+      .selectFrom('password_reset_token')
+      .selectAll()
+      .where('token_hash', '=', tokenHash)
+      .where('actor_type', '=', actorType)
+      .executeTakeFirst();
+    if (!row || row.used_at || row.expires_at < new Date()) {
+      throw new BadRequestException('رمز إعادة التعيين غير صالح أو منتهي الصلاحية');
+    }
+
+    const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
+    const table = actorType === 'CUSTOMER' ? 'customer' : actorType === 'SUPPLIER' ? 'registered_supplier' : 'admin_user';
+    await trx.updateTable(table).set({ password_hash: passwordHash }).where('id', '=', row.actor_id).execute();
+    await trx.updateTable('password_reset_token').set({ used_at: new Date() }).where('id', '=', row.id).execute();
+  }
+
+  /** Deactivated admin/supplier accounts can't reset their way back into a working password — consistent with loginAdmin/loginSupplier's own is_active treatment. */
+  private async findActiveActorByEmail(actorType: ResetPasswordActorType, email: string): Promise<{ id: string } | undefined> {
+    const trx = this.uow.getClient();
+    if (actorType === 'CUSTOMER') {
+      return trx.selectFrom('customer').select(['id']).where('email', '=', email).executeTakeFirst();
+    }
+    if (actorType === 'SUPPLIER') {
+      return trx
+        .selectFrom('registered_supplier')
+        .select(['id'])
+        .where('contact_email', '=', email)
+        .where('is_active', '=', true)
+        .executeTakeFirst();
+    }
+    return trx.selectFrom('admin_user').select(['id']).where('email', '=', email).where('is_active', '=', true).executeTakeFirst();
   }
 
   /**

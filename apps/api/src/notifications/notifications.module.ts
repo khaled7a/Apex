@@ -7,6 +7,10 @@ import { WhatsappProvider } from './providers/whatsapp.provider';
 @Global()
 @Module({
   providers: [NotificationsService, NotificationDispatchWorker, EmailProvider, WhatsappProvider],
-  exports: [NotificationsService],
+  // EmailProvider is also exported directly — AuthService's forgot-password
+  // flow sends an ad hoc reset-link email that isn't tied to any order
+  // transition, so it bypasses NotificationsService (which is hard-wired to
+  // order-transition events) and calls the transport-layer provider itself.
+  exports: [NotificationsService, EmailProvider],
 })
 export class NotificationsModule {}
