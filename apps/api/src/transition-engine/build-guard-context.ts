@@ -21,7 +21,7 @@ export async function buildGuardContext(
     current_state: OrderState;
     service_type_id: string;
     supplier_type: 'REGISTERED' | 'EXTERNAL' | 'NONE';
-    hold_type: 'NONE' | 'ESCALATION' | 'DISPUTE';
+    hold_type: 'NONE' | 'ESCALATION' | 'DISPUTE' | 'RENEWAL';
     active_escalation_id: string | null;
     financial_commitment_started_at: Date | string | null;
     resume_target_state: string | null;

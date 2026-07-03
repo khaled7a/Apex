@@ -11,6 +11,20 @@ const DISPUTE_STATES: readonly OrderState[] = [
 
 const ESCALATION_STATES: readonly OrderState[] = ['ESCALATION_REMINDER', 'ESCALATION_ESCALATED'];
 
+/**
+ * A continuation of the same wait ESCALATION_ESCALATED started, not a
+ * resumption — discovered while wiring up the renewal path that leaving
+ * ESCALATION into one of these (via customer_no_response_final) was wrongly
+ * treated as "fully left the hold," wiping resume_target_state before
+ * admin_approves ever got to use it.
+ */
+const RENEWAL_STATES: readonly OrderState[] = [
+  'AGREEMENT_CANCELLED_PENDING_RENEWAL',
+  'RENEWAL_PENDING_SUPPLIER',
+  'RENEWAL_PENDING_ADMIN',
+  'RENEWAL_SUPPLIER_DECLINED',
+];
+
 export const DISPUTE_TYPE_BY_STATE: Partial<Record<OrderState, string>> = {
   DISPUTE_PAYMENT: 'PAYMENT',
   DISPUTE_QUALITY: 'QUALITY',
@@ -39,6 +53,10 @@ export function isEscalationState(state: OrderState): boolean {
   return ESCALATION_STATES.includes(state);
 }
 
+export function isRenewalState(state: OrderState): boolean {
+  return RENEWAL_STATES.includes(state);
+}
+
 export function isHoldState(state: OrderState): boolean {
-  return isDisputeState(state) || isEscalationState(state);
+  return isDisputeState(state) || isEscalationState(state) || isRenewalState(state);
 }

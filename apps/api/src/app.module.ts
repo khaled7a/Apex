@@ -21,6 +21,7 @@ import { EscalationModule } from './escalation/escalation.module';
 import { ShippingModule } from './shipping/shipping.module';
 import { CustomsFeesModule } from './customs-fees/customs-fees.module';
 import { RatingsModule } from './ratings/ratings.module';
+import { RenewalsModule } from './renewals/renewals.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { RatingsModule } from './ratings/ratings.module';
     ShippingModule,
     CustomsFeesModule,
     RatingsModule,
+    RenewalsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_INTERCEPTOR, useClass: DbTransactionInterceptor }],

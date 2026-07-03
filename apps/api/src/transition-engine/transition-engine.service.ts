@@ -7,7 +7,7 @@ import { UnitOfWork } from '../database/unit-of-work';
 import { AuditLogService } from '../audit/audit-log.service';
 import { buildGuardContext } from './build-guard-context';
 import { StaleStateError, TransitionRejectedError } from './transition-engine.errors';
-import { DISPUTE_TYPE_BY_STATE, ESCALATION_ACTOR_BY_EVENT, isDisputeState, isEscalationState } from './hold-state.util';
+import { DISPUTE_TYPE_BY_STATE, ESCALATION_ACTOR_BY_EVENT, isDisputeState, isEscalationState, isRenewalState } from './hold-state.util';
 import { TIMER_SCHEDULER, TimerSchedulerPort } from '../scheduler/timer-scheduler.port';
 
 export interface TransitionRequest {
@@ -86,20 +86,27 @@ export class TransitionEngineService {
       await request.effect(trx, ctx, toState);
     }
 
-    // ---- generic hold-state bookkeeping (dispute/escalation open + close) ----
+    // ---- generic hold-state bookkeeping (dispute/escalation/renewal open + close) ----
     const wasInHold = order.hold_type !== 'NONE';
     const enteringDispute = isDisputeState(toState);
     const enteringEscalation = isEscalationState(toState);
-    const leavingHold = wasInHold && !enteringDispute && !enteringEscalation;
+    // Discovered while wiring up the renewal path: AGREEMENT_CANCELLED_PENDING_RENEWAL/
+    // RENEWAL_* continue the same wait ESCALATION_ESCALATED started (via
+    // customer_no_response_final) — without accounting for them here, leaving
+    // ESCALATION into one of these was wrongly counted as "fully left the
+    // hold," wiping resume_target_state before admin_approves ever got to
+    // resume it (silently losing real progress back to the default fallback state).
+    const enteringRenewal = isRenewalState(toState);
+    const leavingHold = wasInHold && !enteringDispute && !enteringEscalation && !enteringRenewal;
 
     let newResumeTargetState = order.resume_target_state;
-    if (!wasInHold && (enteringDispute || enteringEscalation)) {
+    if (!wasInHold && (enteringDispute || enteringEscalation || enteringRenewal)) {
       newResumeTargetState = fromState; // snapshot the exact point of interruption
     }
     if (leavingHold) {
       newResumeTargetState = null;
     }
-    const newHoldType = enteringDispute ? 'DISPUTE' : enteringEscalation ? 'ESCALATION' : 'NONE';
+    const newHoldType = enteringDispute ? 'DISPUTE' : enteringEscalation ? 'ESCALATION' : enteringRenewal ? 'RENEWAL' : 'NONE';
 
     let newActiveDisputeId = order.active_dispute_id;
     // Keyed off "no dispute row tracked yet" rather than "!wasInHold" —

@@ -742,4 +742,111 @@ describe('Apex Sourcing — full v1 flow (real PostgreSQL, no mocks)', () => {
     expect(resolved.hold_type).toBe('NONE');
     expect(resolved.active_escalation_id).toBeNull();
   });
+
+  it('renewal resumes at the ORIGINAL freeze point (PROD_CHECKPOINT_2), not the resume_target_state fallback — the live proof of the RENEWAL hold-type fix', async () => {
+    const { orderId, stateVersion: v0 } = await createOrderAtProdDesignSubmitted();
+
+    const designed = await request(server)
+      .post(`/production/${orderId}/design`)
+      .set('Authorization', `Bearer ${supplier1Token}`)
+      .send({ kind: 'image', fileUrl: 'design.png', expectedStateVersion: v0 })
+      .expect(201);
+
+    const approvedDesign = await request(server)
+      .post(`/production/${orderId}/approve`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ expectedStateVersion: designed.body.stateVersion })
+      .expect(201);
+
+    // Reaches PROD_CHECKPOINT_2 for real — this schedules the real CUSTOMER_SLA
+    // timer there (PRODUCTION_SLA_MS=3000 in env.setup.js) that we then let lapse,
+    // instead of approving it, to drive the escalation naturally.
+    const qc = await request(server)
+      .post(`/production/${orderId}/qc`)
+      .set('Authorization', `Bearer ${supplier1Token}`)
+      .send({ kind: 'image', fileUrl: 'qc.png', expectedStateVersion: approvedDesign.body.stateVersion })
+      .expect(201);
+    expect(qc.body.toState).toBe('PROD_CHECKPOINT_2');
+
+    await waitForState(orderId, 'ESCALATION_REMINDER'); // real CUSTOMER_SLA timeout at PROD_CHECKPOINT_2
+
+    // The core proof: resume_target_state is the REAL freeze point, not wiped
+    // by the old (buggy) leavingHold logic that didn't know about RENEWAL states yet.
+    const afterReminder = await db.selectFrom('order').select(['resume_target_state', 'hold_type']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    expect(afterReminder.resume_target_state).toBe('PROD_CHECKPOINT_2');
+    expect(afterReminder.hold_type).toBe('ESCALATION');
+
+    await waitForState(orderId, 'ESCALATION_ESCALATED'); // real ESCALATION_TIMEOUT
+
+    const beforeFinal = await db.selectFrom('order').select(['state_version']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    const cancelledPendingRenewal = await request(server)
+      .post(`/escalation/${orderId}/customer-no-response-final`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ expectedStateVersion: beforeFinal.state_version })
+      .expect(201);
+    expect(cancelledPendingRenewal.body.toState).toBe('AGREEMENT_CANCELLED_PENDING_RENEWAL');
+
+    // resume_target_state must STILL read PROD_CHECKPOINT_2 here — this is the
+    // exact hop (ESCALATION -> AGREEMENT_CANCELLED_PENDING_RENEWAL) the bug used to wipe it on.
+    const afterRenewalEntry = await db.selectFrom('order').select(['resume_target_state', 'hold_type']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    expect(afterRenewalEntry.resume_target_state).toBe('PROD_CHECKPOINT_2');
+    expect(afterRenewalEntry.hold_type).toBe('RENEWAL');
+
+    const requested = await request(server)
+      .post(`/renewals/${orderId}/request`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ expectedStateVersion: cancelledPendingRenewal.body.stateVersion })
+      .expect(201);
+    expect(requested.body.toState).toBe('RENEWAL_PENDING_SUPPLIER');
+
+    const supplierApproved = await request(server)
+      .post(`/renewals/${orderId}/supplier-approves`)
+      .set('Authorization', `Bearer ${supplier1Token}`)
+      .send({ expectedStateVersion: requested.body.stateVersion })
+      .expect(201);
+    expect(supplierApproved.body.toState).toBe('RENEWAL_PENDING_ADMIN');
+
+    const resumed = await request(server)
+      .post(`/renewals/${orderId}/admin-approves`)
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ expectedStateVersion: supplierApproved.body.stateVersion })
+      .expect(201);
+    expect(resumed.body.toState).toBe('PROD_CHECKPOINT_2'); // NOT the 'PROD_DESIGN_SUBMITTED' fallback the bug would have produced
+
+    const finalOrder = await db.selectFrom('order').select(['current_state', 'hold_type', 'active_escalation_id', 'resume_target_state']).where('id', '=', orderId).executeTakeFirstOrThrow();
+    expect(finalOrder.current_state).toBe('PROD_CHECKPOINT_2');
+    expect(finalOrder.hold_type).toBe('NONE');
+    expect(finalOrder.active_escalation_id).toBeNull();
+    expect(finalOrder.resume_target_state).toBeNull();
+
+    const renewal = await db.selectFrom('agreement_renewal').selectAll().where('order_id', '=', orderId).executeTakeFirstOrThrow();
+    expect(renewal.supplier_decision).toBe('APPROVED');
+    expect(renewal.admin_decision).toBe('APPROVED');
+  });
+
+  it('a full renewal decline redirects to DISPUTE_MANDATORY_REFUND, not a silent CANCELLED, once a trust-fund payment was ever confirmed', async () => {
+    const orderId = await createOrderWithTwoOffers();
+    await db
+      .updateTable('order')
+      .set({
+        current_state: 'RENEWAL_SUPPLIER_DECLINED',
+        state_version: 999,
+        hold_type: 'RENEWAL',
+        registered_supplier_id: SUPPLIER_1_ID,
+        financial_commitment_started_at: new Date(0), // a trust-fund payment was confirmed earlier in this order's real life
+      })
+      .where('id', '=', orderId)
+      .execute();
+
+    const cancelled = await request(server)
+      .post(`/renewals/${orderId}/customer-prefers-full-cancel`)
+      .set('Authorization', `Bearer ${customerToken}`)
+      .send({ expectedStateVersion: 999 })
+      .expect(201);
+    expect(cancelled.body.toState).toBe('DISPUTE_MANDATORY_REFUND'); // forceMandatoryRefundIfEverConfirmed rewrote the plain CANCELLED destination
+
+    const dispute = await db.selectFrom('dispute').selectAll().where('order_id', '=', orderId).executeTakeFirstOrThrow();
+    expect(dispute.type).toBe('MANDATORY_REFUND');
+    expect(dispute.status).toBe('OPEN');
+  });
 });
