@@ -44,6 +44,99 @@ export class OrdersService {
     return order;
   }
 
+  async listMine(customerId: string) {
+    const trx = this.uow.getClient();
+    return trx
+      .selectFrom('order')
+      .select(['id', 'service_type_id', 'current_state', 'hold_type', 'created_at', 'final_value_sar'])
+      .where('customer_id', '=', customerId)
+      .orderBy('created_at', 'desc')
+      .execute();
+  }
+
+  /**
+   * One aggregated read across every table the order-detail hub needs, so
+   * the frontend doesn't fire 8-10 separate requests per page load. RLS
+   * already scopes every joined table by actor, but customer_id is checked
+   * explicitly too (defense in depth, not sole reliance on RLS) — a
+   * mismatch is reported as 404, not 403, to avoid confirming the order id
+   * exists at all to a customer who doesn't own it.
+   */
+  async getDetailForCustomer(orderId: string, customerId: string) {
+    const trx = this.uow.getClient();
+    const order = await trx.selectFrom('order').selectAll().where('id', '=', orderId).executeTakeFirst();
+    if (!order || order.customer_id !== customerId) {
+      throw new NotFoundException(`order ${orderId} not found`);
+    }
+
+    const [contract, productionUpdates, shippingDocuments, customsFees, disputes, escalations, renewals, timeline] = await Promise.all([
+      trx.selectFrom('contract').selectAll().where('order_id', '=', orderId).executeTakeFirst(),
+      trx.selectFrom('production_update').selectAll().where('order_id', '=', orderId).orderBy('posted_at', 'asc').execute(),
+      trx.selectFrom('shipping_document').selectAll().where('order_id', '=', orderId).orderBy('uploaded_at', 'asc').execute(),
+      trx.selectFrom('customs_fee').selectAll().where('order_id', '=', orderId).execute(),
+      trx.selectFrom('dispute').selectAll().where('order_id', '=', orderId).execute(),
+      trx.selectFrom('escalation').selectAll().where('order_id', '=', orderId).execute(),
+      trx.selectFrom('agreement_renewal').selectAll().where('order_id', '=', orderId).execute(),
+      trx.selectFrom('state_transition_log').selectAll().where('order_id', '=', orderId).orderBy('id', 'asc').execute(),
+    ]);
+
+    const disputeClaims = disputes.length
+      ? await trx
+          .selectFrom('dispute_claim')
+          .selectAll()
+          .where(
+            'dispute_id',
+            'in',
+            disputes.map((d) => d.id),
+          )
+          .execute()
+      : [];
+
+    const paymentPlan = contract ? await trx.selectFrom('payment_plan').selectAll().where('contract_id', '=', contract.id).executeTakeFirst() : undefined;
+    const installments = paymentPlan
+      ? await trx.selectFrom('payment_installment').selectAll().where('payment_plan_id', '=', paymentPlan.id).orderBy('sequence_no', 'asc').execute()
+      : [];
+    const payments = installments.length
+      ? await trx
+          .selectFrom('payment')
+          .selectAll()
+          .where(
+            'installment_id',
+            'in',
+            installments.map((i) => i.id),
+          )
+          .execute()
+      : [];
+    const receipts = payments.length
+      ? await trx
+          .selectFrom('receipt')
+          .selectAll()
+          .where(
+            'payment_id',
+            'in',
+            payments.map((p) => p.id),
+          )
+          .execute()
+      : [];
+
+    return {
+      order,
+      contract,
+      paymentPlan,
+      installments,
+      payments,
+      receipts,
+      productionUpdates,
+      shippingDocuments,
+      customsFees,
+      disputes,
+      disputeClaims,
+      escalations,
+      renewals,
+      timeline,
+    };
+  }
+
   async submit(orderId: string, actor: ActorRef, expectedStateVersion: number) {
     return this.engine.transition({ orderId, event: 'submit', actor, expectedStateVersion });
   }

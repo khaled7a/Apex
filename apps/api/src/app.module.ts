@@ -23,6 +23,7 @@ import { CustomsFeesModule } from './customs-fees/customs-fees.module';
 import { RatingsModule } from './ratings/ratings.module';
 import { RenewalsModule } from './renewals/renewals.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { UploadsModule } from './uploads/uploads.module';
 
 @Module({
   imports: [
@@ -45,6 +46,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     RatingsModule,
     RenewalsModule,
     NotificationsModule,
+    UploadsModule,
   ],
   controllers: [AppController],
   providers: [AppService, { provide: APP_INTERCEPTOR, useClass: DbTransactionInterceptor }],

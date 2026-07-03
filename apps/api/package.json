@@ -20,7 +20,8 @@
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "migrate": "node-pg-migrate up -m migrations --envPath ../../.env",
     "migrate:down": "node-pg-migrate down -m migrations --envPath ../../.env",
-    "migrate:create": "node-pg-migrate create -m migrations"
+    "migrate:create": "node-pg-migrate create -m migrations",
+    "seed:admin": "node --env-file=../../.env -r ts-node/register scripts/seed-admin.ts"
   },
   "dependencies": {
     "@nestjs/common": "^10.0.0",
@@ -33,6 +34,7 @@
     "@apex/domain": "workspace:*",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
+    "bcrypt": "^5.1.1",
     "kysely": "^0.27.4",
     "nodemailer": "^6.9.16",
     "pg": "^8.13.1",
@@ -46,7 +48,9 @@
     "@nestjs/cli": "^10.0.0",
     "@nestjs/schematics": "^10.0.0",
     "@nestjs/testing": "^10.0.0",
+    "@types/bcrypt": "^5.0.2",
     "@types/express": "^5.0.0",
+    "@types/multer": "^1.4.12",
     "@types/jest": "^29.5.2",
     "@types/node": "^20.3.1",
     "@types/nodemailer": "^6.4.16",

@@ -56,13 +56,16 @@ pnpm --filter @apex/api build && pnpm --filter @apex/api start:prod
 | `PORT` | منفذ الخادم |
 | `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` / `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM_ADDRESS` | اعتمادات SMTP لإشعارات البريد — **اختيارية**: بلا قيم، الخادم يعمل بشكل طبيعي ويُسجِّل كل إشعار بحالة `SKIPPED_NO_CONFIG` بدل الإرسال الفعلي |
 | `WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` / `WHATSAPP_API_BASE_URL` | اعتمادات Meta WhatsApp Cloud API لإشعارات واتساب — **اختيارية** بنفس منطق SMTP أعلاه |
+| `SEED_ADMIN_EMAIL` / `SEED_ADMIN_NAME` / `SEED_ADMIN_PASSWORD` | تُستخدَم مرة واحدة فقط بواسطة `pnpm --filter @apex/api seed:admin` لإنشاء أول حساب `ADMIN_OWNER` (idempotent — لا أثر لتكرار التشغيل إن وُجد إدمن أصلاً) |
+| `FRONTEND_ORIGIN` | أصل الواجهة الأمامية المسموح له بطلبات CORS معتمدة (credentials) — افتراضياً `http://localhost:3001` للتطوير المحلي |
+| `UPLOADS_DIR` | مجلد تخزين الملفات المرفوعة محلياً على القرص (`POST /uploads`) — افتراضياً `./uploads` |
 
 ## الاختبارات
 
 ```bash
 pnpm --filter @apex/domain test          # 31 اختبار وحدة — منطق آلة الحالة، بلا شبكة/قاعدة بيانات
 pnpm --filter @apex/api build            # فحص TypeScript كامل + تصريف
-pnpm --filter @apex/api test:integration # 20 اختبار ضد PostgreSQL حقيقي (apex_test) — RLS، القفل التفاؤلي، four-eyes الحقيقي بقيود الأدوار، عزل الإيصال حسب الطلب، انحراف fx_rate، سلسلة سجل التدقيق، المسار الكامل حتى COMPLETED، التصعيد التلقائي الحي، مسار التجديد بنقطة استئناف صحيحة، سجل الإشعارات الذري
+pnpm --filter @apex/api test:integration # 38 اختبار ضد PostgreSQL حقيقي (apex_test) — RLS، القفل التفاؤلي، four-eyes الحقيقي بقيود الأدوار، عزل الإيصال حسب الطلب، انحراف fx_rate، سلسلة سجل التدقيق، المسار الكامل حتى COMPLETED، التصعيد التلقائي الحي، مسار التجديد بنقطة استئناف صحيحة، سجل الإشعارات الذري، الدخول الحقيقي، عزل قراءات العميل، تحكم وصول الملفات المرفوعة
 ```
 
 اختبارات التكامل تتطلب قاعدة بيانات `apex_test` منفصلة عن `apex_dev`، مُهاجَرة بنفس الطريقة:
@@ -103,6 +106,22 @@ psql -d apex_test -c "ALTER ROLE app_role WITH PASSWORD '...';"
 - الإرسال الفعلي عبر الشبكة (SMTP حقيقي عبر `nodemailer`، وMeta WhatsApp Cloud API عبر `fetch` المدمج) **best-effort غير متزامن** بعد التزام المعاملة، بواسطة عامل `pg-boss` مستقل (`send-notification`) — بنفس فلسفة مؤقّتات `scheduled_timer` القائمة: السجل في القاعدة هو مصدر الحقيقة، وفشل الشبكة لا يُرجِع الانتقال نفسه.
 - الاعتمادات (`SMTP_*`/`WHATSAPP_*`) **اختيارية عمداً** خلافاً لبقية الأسرار — لا اعتمادات حقيقية متاحة في بيئة التطوير الحالية؛ التكامل حقيقي وفعلي بالكامل (لا محاكاة)، وبمجرد إضافة القيم الحقيقية في `.env` يعمل الإرسال الفعلي بلا أي تعديل كود. بغيابها، كل إشعار يُسجَّل بحالة `SKIPPED_NO_CONFIG` (أو `SKIPPED_NO_CONTACT` إن كان المستلم بلا بيانات تواصل أصلاً) بدل التعطّل.
 - نطاق المستلمين مقصور على العميل والمورد المسجَّل — الإدارة تراقب عبر لوحة التحكم/سجل التدقيق مباشرة فلا حاجة لإغراقها بإشعارات على كل انتقال.
+
+## الدخول الحقيقي + فجوات الباك-إند اللازمة للواجهة الأمامية
+
+قبل بناء أي واجهة ويب، انكشف أن لا نظام دخول حقيقي كان موجوداً إطلاقاً (فقط `POST /auth/dev/{customer,supplier,admin}-token` — يُصدر JWT لأي id بلا أي تحقق، معطَّل تلقائياً خارج التطوير) ولا أي endpoint لإنشاء حساب عميل/مورد/إدمن أصلاً.
+
+- **`POST /auth/customer/register`** (عام) — تسجيل ذاتي للعميل بكلمة مرور (bcrypt، 12 rounds) ودخول تلقائي فوري.
+- **`POST /auth/{customer,supplier,admin}/login`** (عام) — دخول حقيقي بالبريد/كلمة المرور، 401 عام موحَّد لا يُفصح إن كان البريد موجوداً أم كلمة المرور خاطئة.
+- **`POST /auth/{customer,supplier,admin}/change-password`** (بحراسة الدور المطابق) — تغيير كلمة المرور بعد التحقق من الحالية.
+- **لا تسجيل ذاتي للمورد/الإدارة** (أمنياً) — `POST /admin/admins` (`ADMIN_OWNER` فقط، عبر قاعدة `ADMIN_ACCOUNT_MANAGE` في مصفوفة الصلاحيات) و`POST /admin/suppliers` (`ADMIN_OWNER`/`ADMIN_OPERATOR`، عبر `SUPPLIER_ACCOUNT_MANAGE`) لتزويد الحسابات لاحقاً. أول حساب `ADMIN_OWNER` يُنشأ عبر سكربت مستقل: `pnpm --filter @apex/api seed:admin` (يقرأ `SEED_ADMIN_*`، idempotent).
+- نقاط `/auth/dev/*` **لم تُحذف** — لا تزال تخدم مجموعة اختبارات التكامل الحالية، ومحصورة بيئياً كما كانت.
+
+بالتوازي، ثلاث فجوات حقيقية أخرى كانت ستمنع بناء أي واجهة عميل فعلياً:
+
+- **`GET /orders/me`** و**`GET /orders/:id/detail`** (`CustomerAuthGuard`) — لم يكن يوجد أي قراءة تصلح للعميل إطلاقاً (`OrdersController.get` إداري فقط). الثاني قراءة مجمَّعة واحدة (عقد + خطة دفعات + دفعات + إيصالات + تحديثات إنتاج + مستندات شحن + رسوم جمركية + نزاعات + تصعيدات + تجديدات + سجل الانتقالات) بدل 8-10 نداءات منفصلة، ومحمية بفحص ملكية صريح (`customer_id`) فوق RLS — رفض بـ404 لا 403 عند طلب عميل آخر (لا يُؤكَّد وجود الطلب أصلاً).
+- **`GET /bidding/:orderId/offers/customer-view`** (`CustomerAuthGuard`) — عروض مجهَّلة فعلياً (تسمية موضعية "المورد ١/٢" بدل `legal_name`/`registered_supplier_id`)، متاحة فقط بعد `REG_SHOWN_TO_CUSTOMER`.
+- **`POST /uploads` + `GET /uploads/:id`** (`AnyActorAuthGuard` — يقبل أي من الحراسات الثلاث عبر passport متعدد الاستراتيجيات) — لم يكن يوجد أي مسار رفع ملفات إطلاقاً رغم أن كل DTO (إيصال، إثبات جمركي) يتوقع `fileUrl` جاهزاً. تخزين محلي على القرص (`UPLOADS_DIR`، لا اعتمادات سحابية متاحة حالياً — نفس منطق SMTP/WhatsApp)، لكن بتحكم وصول حقيقي: الكتابة تتحقق من `order_visible_to_actor()` (دالة SQL نفسها التي تعتمد عليها RLS) قبل الحفظ، والقراءة محمية عبر RLS مباشرة على جدول `uploaded_file` — لا تخزين علني (static) لملفات حساسة كإيصالات الدفع.
 
 ## سجل الإصلاحات المكتشفة أثناء البناء
 

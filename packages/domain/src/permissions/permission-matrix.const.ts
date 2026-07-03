@@ -12,7 +12,9 @@ export type PermissionAction =
   | 'DISPUTE_RESOLVE_MANDATORY_REFUND'
   | 'VIEW_ACTUAL_PROFIT_MARGIN'
   | 'RENEWAL_ADMIN_APPROVAL'
-  | 'EXCEPTIONAL_OVERRIDE';
+  | 'EXCEPTIONAL_OVERRIDE'
+  | 'ADMIN_ACCOUNT_MANAGE'
+  | 'SUPPLIER_ACCOUNT_MANAGE';
 
 export interface PermissionRule {
   action: PermissionAction;
@@ -113,6 +115,18 @@ export const PERMISSION_MATRIX: readonly PermissionRule[] = [
     allowedRoles: ['ADMIN_OWNER'],
     requiresFourEyes: false,
     note: 'استخدام صلاحية استثنائية — يُسجَّل override_used=true مع سبب إلزامي',
+  },
+  {
+    action: 'ADMIN_ACCOUNT_MANAGE',
+    allowedRoles: ['ADMIN_OWNER'],
+    requiresFourEyes: false,
+    note: 'إنشاء حسابات إدارية جديدة (OPERATOR/ACCOUNTANT) — OWNER فقط، لمنع أي موظف من منح نفسه أو غيره صلاحيات إضافية',
+  },
+  {
+    action: 'SUPPLIER_ACCOUNT_MANAGE',
+    allowedRoles: ['ADMIN_OWNER', 'ADMIN_OPERATOR'],
+    requiresFourEyes: false,
+    note: 'تسجيل مورد جديد بحساب دخول — نفس أدوار مراجعة/اعتماد الطلبات (ACCOUNTANT مستبعد)',
   },
 ];
 

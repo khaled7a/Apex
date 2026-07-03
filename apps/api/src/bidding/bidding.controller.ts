@@ -28,6 +28,12 @@ export class BiddingController {
     return this.bidding.listMyOffers(orderId);
   }
 
+  @Get(':orderId/offers/customer-view')
+  @UseGuards(CustomerAuthGuard)
+  listOffersForCustomer(@Param('orderId') orderId: string) {
+    return this.bidding.listOffersForCustomer(orderId);
+  }
+
   @Post(':orderId/review')
   @UseGuards(AdminAuthGuard, PermissionMatrixGuard)
   @RequiresPermission('OFFER_APPROVAL_AND_FX_RATE_ENTRY')

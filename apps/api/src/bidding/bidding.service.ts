@@ -53,6 +53,35 @@ export class BiddingService {
     return trx.selectFrom('offer').selectAll().where('order_id', '=', orderId).execute();
   }
 
+  /**
+   * Anonymized offer comparison for the customer — deliberately never
+   * selects registered_supplier_id or legal_name (docs/schema.sql: the
+   * supplier's real identity stays concealed until IDENTITY_REVEALED, well
+   * after this step). state-machine.md's REG_SHOWN_TO_CUSTOMER row still
+   * calls this "كشف مبدئي: اسم المورد وتقييماته" (initial name+rating
+   * disclosure), but that predates the identity-concealment column comment
+   * on registered_supplier.legal_name — resolved conservatively in favor of
+   * the stronger, more specific security guarantee an anonymized position
+   * label ("Supplier 1"/"Supplier 2"), not the real company name.
+   */
+  async listOffersForCustomer(orderId: string) {
+    const order = await this.uow.getClient().selectFrom('order').select(['current_state']).where('id', '=', orderId).executeTakeFirst();
+    if (!order) throw new NotFoundException(`order ${orderId} not found`);
+    if (!['REG_SHOWN_TO_CUSTOMER', 'REG_CUSTOMER_SELECTS', 'REG_NO_OFFER_SELECTED'].includes(order.current_state)) {
+      throw new BadRequestException('offers are not shown to the customer yet at this order state');
+    }
+
+    const trx = this.uow.getClient();
+    const offers = await trx
+      .selectFrom('offer')
+      .select(['id', 'fob_value_usd', 'lead_time_days', 'terms', 'submitted_at'])
+      .where('order_id', '=', orderId)
+      .orderBy('submitted_at', 'asc')
+      .execute();
+
+    return offers.map((offer, index) => ({ ...offer, supplierLabel: `المورد ${index + 1}` }));
+  }
+
   async reviewBids(orderId: string, actor: ActorRef, dto: ReviewBidsDto) {
     const trx = this.uow.getClient();
     const offers = await trx.selectFrom('offer').selectAll().where('order_id', '=', orderId).execute();

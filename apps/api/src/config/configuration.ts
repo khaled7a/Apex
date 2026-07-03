@@ -35,6 +35,10 @@ export interface AppConfig {
     phoneNumberId?: string;
     apiBaseUrl: string;
   };
+  /** Origin allowed to make credentialed browser requests (the customer/supplier/admin web portals) — defaults to the local Next.js dev port. */
+  frontendOrigin: string;
+  /** Local-disk root for POST /uploads-stored files — see uploads.service.ts. */
+  uploadsDir: string;
 }
 
 function requireEnv(name: string): string {
@@ -73,5 +77,7 @@ export function loadConfig(): AppConfig {
       phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID || undefined,
       apiBaseUrl: process.env.WHATSAPP_API_BASE_URL ?? 'https://graph.facebook.com/v20.0',
     },
+    frontendOrigin: process.env.FRONTEND_ORIGIN ?? 'http://localhost:3001',
+    uploadsDir: process.env.UPLOADS_DIR ?? './uploads',
   };
 }

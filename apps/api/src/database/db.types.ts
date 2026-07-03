@@ -62,6 +62,7 @@ export interface AdminUser {
   is_active: Generated<boolean>;
   mfa_enabled: Generated<boolean>;
   name: string;
+  password_hash: string | null;
   role: AdminRole;
 }
 
@@ -123,6 +124,7 @@ export interface Customer {
   email: string;
   id: Generated<string>;
   name: string;
+  password_hash: string | null;
   phone: string;
 }
 
@@ -326,6 +328,7 @@ export interface RegisteredSupplier {
   id: Generated<string>;
   is_active: Generated<boolean>;
   legal_name: string;
+  password_hash: string | null;
   whatsapp_phone: string | null;
 }
 
@@ -408,6 +411,17 @@ export interface SupplierRating {
   supplier_type: SupplierType;
 }
 
+export interface UploadedFile {
+  created_at: Generated<Timestamp>;
+  id: Generated<string>;
+  mime_type: string;
+  order_id: string;
+  original_filename: string;
+  stored_filename: string;
+  uploaded_by_id: string | null;
+  uploaded_by_type: string;
+}
+
 export interface DB {
   admin_user: AdminUser;
   agreement_renewal: AgreementRenewal;
@@ -441,4 +455,5 @@ export interface DB {
   supplier_category: SupplierCategory;
   supplier_category_map: SupplierCategoryMap;
   supplier_rating: SupplierRating;
+  uploaded_file: UploadedFile;
 }

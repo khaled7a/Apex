@@ -46,4 +46,16 @@ describe('permission matrix — docs/data-model.md §1', () => {
   it('an unknown role is never allowed any action', () => {
     expect(isActionAllowed('ORDER_APPROVE_EDIT_REJECT', 'SYSTEM')).toBe(false);
   });
+
+  it('only OWNER can create new admin accounts', () => {
+    expect(isActionAllowed('ADMIN_ACCOUNT_MANAGE', 'ADMIN_OWNER')).toBe(true);
+    expect(isActionAllowed('ADMIN_ACCOUNT_MANAGE', 'ADMIN_OPERATOR')).toBe(false);
+    expect(isActionAllowed('ADMIN_ACCOUNT_MANAGE', 'ADMIN_ACCOUNTANT')).toBe(false);
+  });
+
+  it('OWNER and OPERATOR can register a new supplier account, ACCOUNTANT cannot', () => {
+    expect(isActionAllowed('SUPPLIER_ACCOUNT_MANAGE', 'ADMIN_OWNER')).toBe(true);
+    expect(isActionAllowed('SUPPLIER_ACCOUNT_MANAGE', 'ADMIN_OPERATOR')).toBe(true);
+    expect(isActionAllowed('SUPPLIER_ACCOUNT_MANAGE', 'ADMIN_ACCOUNTANT')).toBe(false);
+  });
 });

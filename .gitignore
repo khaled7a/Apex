@@ -4,3 +4,4 @@ dist/
 *.tsbuildinfo
 coverage/
 *.log
+apps/api/uploads/

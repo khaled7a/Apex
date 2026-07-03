@@ -21,10 +21,25 @@ export class OrdersController {
     return this.orders.createDraft(req.actor!.id!, dto.serviceTypeCode);
   }
 
+  // Must be registered before ':id' below — otherwise Nest/Express would
+  // match GET /orders/me as ':id'='me' under AdminAuthGuard instead, which a
+  // customer's own bearer token would fail.
+  @Get('me')
+  @UseGuards(CustomerAuthGuard)
+  listMine(@Req() req: RequestWithActor) {
+    return this.orders.listMine(req.actor!.id!);
+  }
+
   @Get(':id')
   @UseGuards(AdminAuthGuard)
   get(@Param('id') id: string) {
     return this.orders.get(id);
+  }
+
+  @Get(':id/detail')
+  @UseGuards(CustomerAuthGuard)
+  getDetail(@Req() req: RequestWithActor, @Param('id') id: string) {
+    return this.orders.getDetailForCustomer(id, req.actor!.id!);
   }
 
   @Post(':id/submit')
