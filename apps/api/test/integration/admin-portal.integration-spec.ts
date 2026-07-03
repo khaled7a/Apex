@@ -296,14 +296,19 @@ describe('Apex Sourcing — admin portal backend: external-supplier vetting, bid
         .expect(400);
     });
 
-    it('rejects deactivating the last active OWNER, even when the caller is a different admin', async () => {
+    it('a deactivated third-party OWNER can no longer use their stale token to attempt deactivating the last active OWNER', async () => {
       // Deactivate OWNER_2 first, leaving OWNER_1 as the sole active OWNER.
       await request(server).post(`/admin/admins/${OWNER_2_ID}/deactivate`).set('Authorization', `Bearer ${owner1Token}`).expect(201);
-      // A third OWNER account (distinct caller identity, so this isn't the blocked self-deactivation case) tries to deactivate OWNER_1.
+      // Before the is_active JWT check existed, a third (already-deactivated) OWNER's
+      // pre-issued token could still reach setAdminActive's "last active OWNER" count guard
+      // (a 400). Now the JWT strategy itself rejects the stale token outright (401), before
+      // the request ever reaches that business-logic guard — a strictly stronger protection.
+      // (A distinct *active* OWNER can never trigger that guard's rejection branch either:
+      // being active themselves, they always keep the active-OWNER count above the threshold.)
       const thirdOwnerId = 'a1111111-1111-1111-1111-111111111113';
       await db.insertInto('admin_user').values({ id: thirdOwnerId, name: 'Third Owner', email: 'third@apex.sa', role: 'OWNER', mfa_enabled: true, is_active: false }).execute();
       const thirdOwnerToken = (await request(server).post('/auth/dev/admin-token').send({ adminId: thirdOwnerId, role: 'OWNER' })).body.token;
-      await request(server).post(`/admin/admins/${OWNER_1_ID}/deactivate`).set('Authorization', `Bearer ${thirdOwnerToken}`).expect(400);
+      await request(server).post(`/admin/admins/${OWNER_1_ID}/deactivate`).set('Authorization', `Bearer ${thirdOwnerToken}`).expect(401);
     });
 
     it('deactivating a supplier account blocks its subsequent login', async () => {
@@ -318,6 +323,28 @@ describe('Apex Sourcing — admin portal backend: external-supplier vetting, bid
       await request(server).post(`/admin/suppliers/${SUPPLIER_1_ID}/reactivate`).set('Authorization', `Bearer ${owner1Token}`).expect(201);
       const supplier = await db.selectFrom('registered_supplier').select(['is_active']).where('id', '=', SUPPLIER_1_ID).executeTakeFirstOrThrow();
       expect(supplier.is_active).toBe(true);
+    });
+
+    it('deactivating an admin invalidates their already-issued JWT immediately, not just future logins', async () => {
+      // OPERATOR_ID's token was issued in beforeEach, before any deactivation — this proves
+      // the strategy re-checks is_active on every request rather than trusting the JWT payload alone.
+      await request(server).get('/admin/admins').set('Authorization', `Bearer ${operatorToken}`).expect(200);
+      await request(server).post(`/admin/admins/${OPERATOR_ID}/deactivate`).set('Authorization', `Bearer ${owner1Token}`).expect(201);
+      await request(server).get('/admin/admins').set('Authorization', `Bearer ${operatorToken}`).expect(401);
+    });
+
+    it('reactivating an admin restores access for the same pre-existing token', async () => {
+      await request(server).post(`/admin/admins/${OPERATOR_ID}/deactivate`).set('Authorization', `Bearer ${owner1Token}`).expect(201);
+      await request(server).get('/admin/admins').set('Authorization', `Bearer ${operatorToken}`).expect(401);
+      await request(server).post(`/admin/admins/${OPERATOR_ID}/reactivate`).set('Authorization', `Bearer ${owner1Token}`).expect(201);
+      await request(server).get('/admin/admins').set('Authorization', `Bearer ${operatorToken}`).expect(200);
+    });
+
+    it('deactivating a supplier invalidates their already-issued JWT immediately, not just future logins', async () => {
+      const supplierToken = (await request(server).post('/auth/dev/supplier-token').send({ supplierId: SUPPLIER_1_ID })).body.token;
+      await request(server).get('/bidding/board').set('Authorization', `Bearer ${supplierToken}`).expect(200);
+      await request(server).post(`/admin/suppliers/${SUPPLIER_1_ID}/deactivate`).set('Authorization', `Bearer ${owner1Token}`).expect(201);
+      await request(server).get('/bidding/board').set('Authorization', `Bearer ${supplierToken}`).expect(401);
     });
   });
 

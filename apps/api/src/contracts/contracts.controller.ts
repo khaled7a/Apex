@@ -28,10 +28,4 @@ export class ContractsController {
   ) {
     return this.contracts.signContract(orderId, req.actor!, expectedStateVersion, signatureRef);
   }
-
-  @Post(':orderId/logistics-setup-complete')
-  @UseGuards(AdminAuthGuard)
-  completeLogisticsSetup(@Req() req: RequestWithActor, @Param('orderId') orderId: string, @Body('expectedStateVersion') expectedStateVersion: number) {
-    return this.contracts.completeLogisticsSetup(orderId, req.actor!, expectedStateVersion);
-  }
 }

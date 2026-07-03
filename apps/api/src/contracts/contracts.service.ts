@@ -72,9 +72,4 @@ export class ContractsService {
     await trx.updateTable('contract').set({ signed_at: new Date(), signature_ref: signatureRef }).where('order_id', '=', orderId).execute();
     return this.engine.transition({ orderId, event: 'sign_contract', actor, expectedStateVersion });
   }
-
-  /** Simple v1 path for SHIPPING_CLEARANCE_ONLY orders — no trust-fund payment plan involved, see state-machine.md §6. */
-  async completeLogisticsSetup(orderId: string, actor: ActorRef, expectedStateVersion: number) {
-    return this.engine.transition({ orderId, event: 'setup_complete', actor, expectedStateVersion });
-  }
 }
