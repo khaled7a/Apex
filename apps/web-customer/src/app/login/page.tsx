@@ -32,6 +32,9 @@ export default function LoginPage() {
             سجّل الآن
           </Link>
         </p>
+        <p className="text-center text-xs text-slate-500">
+          <Link href="/forgot-password" className="hover:text-emerald-700">نسيت كلمة المرور؟</Link>
+        </p>
       </form>
     </div>
   );

@@ -6,7 +6,7 @@ import { SESSION_COOKIE } from './lib/session';
 // Optimistic check only (cookie presence, not signature/expiry) per Next's
 // own auth guide: a real 401 from the API (checked server-side on every
 // page/action) is the actual enforcement point.
-const PUBLIC_PATHS = ['/login', '/register'];
+const PUBLIC_PATHS = ['/login', '/register', '/forgot-password', '/reset-password'];
 
 export function proxy(request: NextRequest) {
   const { pathname } = request.nextUrl;
