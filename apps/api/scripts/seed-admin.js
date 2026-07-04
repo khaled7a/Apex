@@ -6,9 +6,15 @@
  * requires an existing ADMIN_OWNER) — hence a standalone script, run once,
  * outside the HTTP surface. Idempotent: no-ops if any admin_user row already
  * exists, so re-running it (e.g. on every deploy) is safe.
+ *
+ * Plain CommonJS, not TypeScript: this only ever needs `pg`/`bcrypt`, both
+ * real runtime dependencies (not devDependencies like ts-node/typescript),
+ * so it runs with a bare `node scripts/seed-admin.js` on any host — no
+ * build step or ts-node/register needed, which matters on hosts where the
+ * production runtime environment can't be assumed to carry devDependencies.
  */
-import { Pool } from 'pg';
-import bcrypt from 'bcrypt';
+const { Pool } = require('pg');
+const bcrypt = require('bcrypt');
 
 async function main() {
   const connectionString = process.env.APP_DATABASE_URL;
