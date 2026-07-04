@@ -4,13 +4,14 @@
  * There is no self-registration for admins (security-sensitive), and no
  * endpoint can create the very first one (every admin-provisioning endpoint
  * requires an existing ADMIN_OWNER) — hence a standalone script, run once,
- * outside the HTTP surface.
- *
- * Idempotent behaviour:
- *  - If no admin_user row exists → INSERT a new OWNER account.
- *  - If an admin_user row already exists → UPDATE password_hash for the OWNER
- *    account matching SEED_ADMIN_EMAIL (allows rotating the password by
- *    changing SEED_ADMIN_PASSWORD and redeploying).
+ * outside the HTTP surface. Idempotent: no-ops if any admin_user row already
+ * exists, so re-running it (e.g. on every deploy) is safe — deliberately
+ * does NOT rotate an existing account's password, since this script's
+ * output is chained into the API's own start command and therefore runs on
+ * every future deploy: if it kept re-applying SEED_ADMIN_PASSWORD, a real
+ * password change made later through the app itself (change-password /
+ * forgot-password) would silently get overwritten back to the stale env
+ * var value on the next unrelated deploy.
  *
  * Plain CommonJS, not TypeScript: this only ever needs `pg`/`bcrypt`, both
  * real runtime dependencies (not devDependencies like ts-node/typescript),
@@ -34,29 +35,18 @@ async function main() {
 
   const pool = new Pool({ connectionString });
   try {
-    const passwordHash = await bcrypt.hash(password, 12);
-
-    // Scoped to this specific email, not "any admin exists" — otherwise, once other
-    // admin_user rows exist (OPERATOR/ACCOUNTANT accounts, a second OWNER, ...), the old
-    // "any row" check would still take the update branch below even if SEED_ADMIN_EMAIL
-    // itself was never created, silently matching zero rows on the UPDATE while still
-    // logging a false "Updated password_hash" success message.
-    const { rows } = await pool.query('SELECT id FROM admin_user WHERE email = $1', [email]);
+    const { rows } = await pool.query('SELECT id FROM admin_user LIMIT 1');
     if (rows.length > 0) {
-      // Account exists — update password_hash for this email (allows password rotation).
-      await pool.query(
-        'UPDATE admin_user SET password_hash = $1 WHERE email = $2',
-        [passwordHash, email]
-      );
-      console.log(`Updated password_hash for ADMIN_OWNER account: ${email}`);
-    } else {
-      // No admin yet — create the first OWNER.
-      await pool.query(
-        `INSERT INTO admin_user (name, email, password_hash, role, mfa_enabled) VALUES ($1, $2, $3, 'OWNER', true)`,
-        [name, email, passwordHash]
-      );
-      console.log(`Created the first ADMIN_OWNER account: ${email}`);
+      console.log('An admin account already exists — skipping (idempotent no-op).');
+      return;
     }
+
+    const passwordHash = await bcrypt.hash(password, 12);
+    await pool.query(
+      `INSERT INTO admin_user (name, email, password_hash, role, mfa_enabled) VALUES ($1, $2, $3, 'OWNER', true)`,
+      [name, email, passwordHash],
+    );
+    console.log(`Created the first ADMIN_OWNER account: ${email}`);
   } finally {
     await pool.end();
   }
