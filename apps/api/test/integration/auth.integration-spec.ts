@@ -1,6 +1,7 @@
 import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { Kysely } from 'kysely';
+import { createHash } from 'node:crypto';
 import { createAdminDb, createTestApp, truncateAll } from './test-app';
 import { DB } from '../../src/database/db.types';
 
@@ -184,6 +185,109 @@ describe('Apex Sourcing — real credential-based auth (real PostgreSQL, no mock
         .set('Authorization', `Bearer ${ownerToken}`)
         .send({ legalName: 'Another Co', contactEmail: 'supplier3@example.com', password: 'another-password' })
         .expect(409);
+    });
+  });
+
+  describe('refresh token', () => {
+    async function backdateRevocation(refreshToken: string, secondsAgo: number): Promise<void> {
+      const tokenHash = createHash('sha256').update(refreshToken).digest('hex');
+      await db
+        .updateTable('refresh_token')
+        .set({ revoked_at: new Date(Date.now() - secondsAgo * 1000) })
+        .where('token_hash', '=', tokenHash)
+        .execute();
+    }
+
+    it('issues a refresh token alongside the access token on register/login, and refreshing rotates both', async () => {
+      const register = await request(server)
+        .post('/auth/customer/register')
+        .send({ name: 'Ahmed', email: 'refresh1@example.com', phone: '0500000001', password: 'correct-horse-battery' })
+        .expect(201);
+      expect(register.body.refreshToken).toEqual(expect.any(String));
+
+      const refreshed = await request(server).post('/auth/customer/refresh').send({ refreshToken: register.body.refreshToken }).expect(201);
+      expect(refreshed.body.token).toEqual(expect.any(String));
+      expect(refreshed.body.refreshToken).toEqual(expect.any(String));
+      // (Access tokens can coincide byte-for-byte with the same {sub, aud, iat, exp} signed
+      // within the same second — that's expected JWT determinism, not a rotation failure.)
+      expect(refreshed.body.refreshToken).not.toBe(register.body.refreshToken);
+    });
+
+    it('rejects an unknown refresh token', async () => {
+      await request(server).post('/auth/customer/refresh').send({ refreshToken: 'not-a-real-token' }).expect(401);
+    });
+
+    it('a legitimate concurrent retry within the grace window still succeeds with the already-rotated token', async () => {
+      const register = await request(server)
+        .post('/auth/customer/register')
+        .send({ name: 'Ahmed', email: 'refresh2@example.com', phone: '0500000001', password: 'correct-horse-battery' })
+        .expect(201);
+
+      await request(server).post('/auth/customer/refresh').send({ refreshToken: register.body.refreshToken }).expect(201);
+      // Same (now-rotated) token presented again immediately — simulates a second concurrent
+      // request that read the cookie before the first rotation's Set-Cookie reached the browser.
+      const secondRacer = await request(server).post('/auth/customer/refresh').send({ refreshToken: register.body.refreshToken }).expect(201);
+      expect(secondRacer.body.token).toEqual(expect.any(String));
+    });
+
+    it('rejects reusing a rotated token once the grace window has passed', async () => {
+      const register = await request(server)
+        .post('/auth/customer/register')
+        .send({ name: 'Ahmed', email: 'refresh3@example.com', phone: '0500000001', password: 'correct-horse-battery' })
+        .expect(201);
+
+      await request(server).post('/auth/customer/refresh').send({ refreshToken: register.body.refreshToken }).expect(201);
+      await backdateRevocation(register.body.refreshToken, 11);
+      await request(server).post('/auth/customer/refresh').send({ refreshToken: register.body.refreshToken }).expect(401);
+    });
+
+    it('logout revokes immediately — no grace window applies to an explicit logout, unlike rotation', async () => {
+      const register = await request(server)
+        .post('/auth/customer/register')
+        .send({ name: 'Ahmed', email: 'refresh4@example.com', phone: '0500000001', password: 'correct-horse-battery' })
+        .expect(201);
+
+      await request(server).post('/auth/customer/logout').send({ refreshToken: register.body.refreshToken }).expect(201);
+      await request(server).post('/auth/customer/refresh').send({ refreshToken: register.body.refreshToken }).expect(401);
+    });
+
+    it('logout is idempotent — revoking twice, or an unknown token, never errors', async () => {
+      const register = await request(server)
+        .post('/auth/customer/register')
+        .send({ name: 'Ahmed', email: 'refresh5@example.com', phone: '0500000001', password: 'correct-horse-battery' })
+        .expect(201);
+
+      await request(server).post('/auth/customer/logout').send({ refreshToken: register.body.refreshToken }).expect(201);
+      await request(server).post('/auth/customer/logout').send({ refreshToken: register.body.refreshToken }).expect(201);
+      await request(server).post('/auth/customer/logout').send({ refreshToken: 'never-existed' }).expect(201);
+    });
+
+    it('rejects refreshing a deactivated supplier account even with a structurally valid, unexpired refresh token', async () => {
+      const OWNER_ID = 'a1111111-1111-1111-1111-111111111111';
+      await db.insertInto('admin_user').values({ id: OWNER_ID, name: 'Khaled Owner', email: 'khaled-refresh@apex.sa', role: 'OWNER', mfa_enabled: true }).execute();
+      const ownerToken = (await request(server).post('/auth/dev/admin-token').send({ adminId: OWNER_ID, role: 'OWNER' })).body.token;
+
+      await request(server)
+        .post('/admin/suppliers')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ legalName: 'Guangzhou Trading Co', contactEmail: 'refresh-supplier@example.com', password: 'supplier-password-123' })
+        .expect(201);
+      const login = await request(server).post('/auth/supplier/login').send({ email: 'refresh-supplier@example.com', password: 'supplier-password-123' }).expect(201);
+
+      const suppliers = await db.selectFrom('registered_supplier').select(['id']).where('contact_email', '=', 'refresh-supplier@example.com').executeTakeFirstOrThrow();
+      await request(server).post(`/admin/suppliers/${suppliers.id}/deactivate`).set('Authorization', `Bearer ${ownerToken}`).expect(201);
+
+      await request(server).post('/auth/supplier/refresh').send({ refreshToken: login.body.refreshToken }).expect(401);
+    });
+
+    it('rejects a refresh token issued for one actor type when presented to a different actor type\'s refresh endpoint', async () => {
+      const register = await request(server)
+        .post('/auth/customer/register')
+        .send({ name: 'Ahmed', email: 'refresh6@example.com', phone: '0500000001', password: 'correct-horse-battery' })
+        .expect(201);
+
+      await request(server).post('/auth/supplier/refresh').send({ refreshToken: register.body.refreshToken }).expect(401);
+      await request(server).post('/auth/admin/refresh').send({ refreshToken: register.body.refreshToken }).expect(401);
     });
   });
 });

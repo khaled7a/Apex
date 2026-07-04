@@ -2,7 +2,7 @@
 
 import { redirect } from 'next/navigation';
 import { apiFetch, ApiError } from '@/lib/api';
-import { setSessionCookie, clearSessionCookie } from '@/lib/session';
+import { setSessionCookies, clearSessionCookies, getRefreshToken } from '@/lib/session';
 
 export type AuthFormState = { error: string } | undefined;
 
@@ -10,10 +10,9 @@ export async function login(_prevState: AuthFormState, formData: FormData): Prom
   const email = String(formData.get('email') ?? '');
   const password = String(formData.get('password') ?? '');
 
-  let token: string;
+  let session: { token: string; refreshToken: string };
   try {
-    const result = await apiFetch<{ token: string }>('/auth/customer/login', { method: 'POST', body: { email, password }, token: null });
-    token = result.token;
+    session = await apiFetch<{ token: string; refreshToken: string }>('/auth/customer/login', { method: 'POST', body: { email, password }, token: null });
   } catch (err) {
     if (err instanceof ApiError && err.status === 401) {
       return { error: 'البريد الإلكتروني أو كلمة المرور غير صحيحة' };
@@ -21,7 +20,7 @@ export async function login(_prevState: AuthFormState, formData: FormData): Prom
     return { error: 'تعذّر تسجيل الدخول، حاول مرة أخرى' };
   }
 
-  await setSessionCookie(token);
+  await setSessionCookies(session.token, session.refreshToken);
   redirect('/dashboard');
 }
 
@@ -32,14 +31,13 @@ export async function register(_prevState: AuthFormState, formData: FormData): P
   const password = String(formData.get('password') ?? '');
   const companyName = String(formData.get('companyName') ?? '') || undefined;
 
-  let token: string;
+  let session: { token: string; refreshToken: string };
   try {
-    const result = await apiFetch<{ token: string }>('/auth/customer/register', {
+    session = await apiFetch<{ token: string; refreshToken: string }>('/auth/customer/register', {
       method: 'POST',
       body: { name, email, phone, password, companyName },
       token: null,
     });
-    token = result.token;
   } catch (err) {
     if (err instanceof ApiError && err.status === 409) {
       return { error: 'يوجد حساب مسجَّل بهذا البريد الإلكتروني بالفعل' };
@@ -50,11 +48,15 @@ export async function register(_prevState: AuthFormState, formData: FormData): P
     return { error: 'تعذّر إنشاء الحساب، حاول مرة أخرى' };
   }
 
-  await setSessionCookie(token);
+  await setSessionCookies(session.token, session.refreshToken);
   redirect('/dashboard');
 }
 
 export async function logout(): Promise<void> {
-  await clearSessionCookie();
+  const refreshToken = await getRefreshToken();
+  if (refreshToken) {
+    await apiFetch('/auth/customer/logout', { method: 'POST', body: { refreshToken }, token: null }).catch(() => undefined);
+  }
+  await clearSessionCookies();
   redirect('/login');
 }

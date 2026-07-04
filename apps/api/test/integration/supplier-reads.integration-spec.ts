@@ -105,6 +105,49 @@ describe('Apex Sourcing — supplier reads: bidding board, assigned orders, deta
     expect(boardAfter.body.map((row: any) => row.order_id)).not.toContain(orderId);
   });
 
+  describe('GET /bidding/my-offers', () => {
+    it('surfaces an order in the admin-review window to the supplier who bid on it, and to no one else — while it is simultaneously absent from board and assigned-to-me', async () => {
+      const orderId = await createPublishedOrder();
+      await request(server)
+        .post(`/bidding/${orderId}/offers`)
+        .set('Authorization', `Bearer ${supplier1Token}`)
+        .send({ fobValueUsd: 10000, leadTimeDays: 30, terms: '30 days' });
+      await waitForState(orderId, 'REG_ADMIN_REVIEW_BIDS');
+
+      const pendingForBidder = await request(server).get('/bidding/my-offers').set('Authorization', `Bearer ${supplier1Token}`).expect(200);
+      expect(pendingForBidder.body.map((row: any) => row.order_id)).toContain(orderId);
+      const row = pendingForBidder.body.find((r: any) => r.order_id === orderId);
+      expect(row.current_state).toBe('REG_ADMIN_REVIEW_BIDS');
+      expect(row.serviceTypeLabel).toBe('باب لباب');
+
+      const pendingForNonBidder = await request(server).get('/bidding/my-offers').set('Authorization', `Bearer ${supplier2Token}`).expect(200);
+      expect(pendingForNonBidder.body.map((row: any) => row.order_id)).not.toContain(orderId);
+
+      const board = await request(server).get('/bidding/board').set('Authorization', `Bearer ${supplier1Token}`).expect(200);
+      expect(board.body.map((row: any) => row.order_id)).not.toContain(orderId);
+      const assigned = await request(server).get('/orders/assigned-to-me').set('Authorization', `Bearer ${supplier1Token}`).expect(200);
+      expect(assigned.body.map((o: any) => o.id)).not.toContain(orderId);
+    });
+
+    it('drops off my-offers once a winner is selected — it belongs on assigned-to-me/board from then on', async () => {
+      const orderId = await createPublishedOrder();
+      await request(server)
+        .post(`/bidding/${orderId}/offers`)
+        .set('Authorization', `Bearer ${supplier1Token}`)
+        .send({ fobValueUsd: 10000, leadTimeDays: 30, terms: '30 days' });
+      await waitForState(orderId, 'REG_ADMIN_REVIEW_BIDS');
+      await request(server)
+        .post(`/bidding/${orderId}/review`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ expectedStateVersion: 7, fxRateUsed: 3.75, fxRateSource: 'SAMA', fxReferenceRate: 3.75 });
+      const offers = await request(server).get(`/bidding/${orderId}/offers`).set('Authorization', `Bearer ${supplier1Token}`);
+      await request(server).post(`/bidding/${orderId}/select/${offers.body[0].id}`).set('Authorization', `Bearer ${customerToken}`).send({ expectedStateVersion: 8 });
+
+      const pending = await request(server).get('/bidding/my-offers').set('Authorization', `Bearer ${supplier1Token}`).expect(200);
+      expect(pending.body.map((row: any) => row.order_id)).not.toContain(orderId);
+    });
+  });
+
   describe('GET /orders/:id/detail-for-supplier', () => {
     it('returns the aggregated detail with no customer field anywhere in the response, for the winning supplier only', async () => {
       const orderId = await createPublishedOrder();

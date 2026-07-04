@@ -409,6 +409,17 @@ export interface Receipt {
   verified_by: string | null;
 }
 
+export interface RefreshToken {
+  actor_id: string;
+  actor_type: string;
+  created_at: Generated<Timestamp>;
+  expires_at: Timestamp;
+  id: Generated<string>;
+  replaced_by_id: string | null;
+  revoked_at: Timestamp | null;
+  token_hash: string;
+}
+
 export interface RefundTransaction {
   decided_at: Generated<Timestamp>;
   decided_by_accountant: string;
@@ -552,6 +563,7 @@ export interface DB {
   pgmigrations: Pgmigrations;
   production_update: ProductionUpdate;
   receipt: Receipt;
+  refresh_token: RefreshToken;
   refund_transaction: RefundTransaction;
   registered_supplier: RegisteredSupplier;
   salary_accrual: SalaryAccrual;

@@ -1,9 +1,10 @@
 import Link from 'next/link';
-import { listAssignedToMe, listBiddingBoard } from '@/lib/orders';
+import { listAssignedToMe, listBiddingBoard, listMyPendingOffers } from '@/lib/orders';
 import { OrderStateBadge } from '@/components/OrderStateBadge';
+import { orderStateLabel } from '@/lib/state-labels';
 
 export default async function DashboardPage() {
-  const [board, assigned] = await Promise.all([listBiddingBoard(), listAssignedToMe()]);
+  const [board, assigned, pending] = await Promise.all([listBiddingBoard(), listAssignedToMe(), listMyPendingOffers()]);
 
   return (
     <div className="space-y-8">
@@ -25,6 +26,30 @@ export default async function DashboardPage() {
                   </div>
                   <span className="rounded-full bg-emerald-50 px-3 py-1 text-xs font-medium text-emerald-800">قدّم عرضاً</span>
                 </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <section>
+        <h2 className="mb-4 text-xl font-bold">عروضي المعلَّقة</h2>
+        {pending.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-slate-300 bg-white p-8 text-center text-slate-500">لا توجد عروض معلَّقة حالياً.</p>
+        ) : (
+          <ul className="space-y-3">
+            {pending.map((row) => (
+              <li
+                key={row.order_id}
+                className="flex items-center justify-between rounded-lg border border-slate-200 bg-white p-4"
+              >
+                <div>
+                  <p className="font-medium">{row.serviceTypeLabel}</p>
+                  <p className="text-xs text-slate-400">
+                    عرضك: {row.myOfferFobValueUsd ?? '—'} — {new Date(row.submitted_at).toLocaleDateString('ar-SA')}
+                  </p>
+                </div>
+                <span className="rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-800">{orderStateLabel(row.current_state)}</span>
               </li>
             ))}
           </ul>

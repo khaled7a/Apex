@@ -88,3 +88,16 @@ export interface BiddingBoardRow {
 export async function listBiddingBoard(): Promise<BiddingBoardRow[]> {
   return apiFetch<BiddingBoardRow[]>('/bidding/board');
 }
+
+export interface PendingOfferRow {
+  order_id: string;
+  myOfferFobValueUsd: string | null;
+  submitted_at: string;
+  current_state: string;
+  serviceTypeLabel: string;
+}
+
+/** Orders bid on that have temporarily vanished from both listBiddingBoard and listAssignedToMe — see migrations/1700000000031_order-visibility-pending-offers.sql. */
+export async function listMyPendingOffers(): Promise<PendingOfferRow[]> {
+  return apiFetch<PendingOfferRow[]>('/bidding/my-offers');
+}

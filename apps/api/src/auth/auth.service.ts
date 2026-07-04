@@ -16,6 +16,13 @@ import { EmailProvider } from '../notifications/providers/email.provider';
 
 const BCRYPT_ROUNDS = 12;
 const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
+const ACCESS_TOKEN_TTL = '1h';
+const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+// A concurrent refresh (e.g. two Next.js prefetches racing on the same soon-to-expire
+// cookie) can present an already-rotated token milliseconds after another request won
+// the rotation — this window lets that second, legitimate request still succeed instead
+// of forcing a spurious logout, while a token reused well outside it is rejected as stale.
+const REFRESH_GRACE_MS = 10 * 1000;
 
 export type ResetPasswordActorType = 'CUSTOMER' | 'SUPPLIER' | 'ADMIN';
 
@@ -41,25 +48,111 @@ export class AuthService {
   issueCustomerToken(customerId: string): string {
     return this.jwt.sign(
       { sub: customerId, aud: 'customer' },
-      { secret: this.config.get('jwt.customerSecret', { infer: true }), expiresIn: '12h' },
+      { secret: this.config.get('jwt.customerSecret', { infer: true }), expiresIn: ACCESS_TOKEN_TTL },
     );
   }
 
   issueSupplierToken(supplierId: string): string {
     return this.jwt.sign(
       { sub: supplierId, aud: 'supplier' },
-      { secret: this.config.get('jwt.supplierSecret', { infer: true }), expiresIn: '12h' },
+      { secret: this.config.get('jwt.supplierSecret', { infer: true }), expiresIn: ACCESS_TOKEN_TTL },
     );
   }
 
   issueAdminToken(adminId: string, role: AdminJwtRole): string {
     return this.jwt.sign(
       { sub: adminId, aud: 'admin', role },
-      { secret: this.config.get('jwt.adminSecret', { infer: true }), expiresIn: '12h' },
+      { secret: this.config.get('jwt.adminSecret', { infer: true }), expiresIn: ACCESS_TOKEN_TTL },
     );
   }
 
-  async registerCustomer(dto: RegisterCustomerDto): Promise<{ token: string }> {
+  /** Opportunistically prunes this same actor's old rows on every issuance — bounds table growth without a separate scheduled job. */
+  private async issueRefreshToken(actorType: ResetPasswordActorType, actorId: string): Promise<string> {
+    const trx = this.uow.getClient();
+    const rawToken = randomBytes(32).toString('hex');
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    await trx
+      .insertInto('refresh_token')
+      .values({ actor_type: actorType, actor_id: actorId, token_hash: tokenHash, expires_at: new Date(Date.now() + REFRESH_TOKEN_TTL_MS) })
+      .execute();
+    await trx
+      .deleteFrom('refresh_token')
+      .where('actor_type', '=', actorType)
+      .where('actor_id', '=', actorId)
+      .where((eb) => eb.or([eb('expires_at', '<', new Date()), eb.and([eb('revoked_at', 'is not', null), eb('revoked_at', '<', new Date(Date.now() - 24 * 60 * 60 * 1000))])]))
+      .execute();
+    return rawToken;
+  }
+
+  /**
+   * Rotates on every use: the presented token is revoked and linked to its
+   * successor via replaced_by_id, and a fresh pair is issued. A token
+   * presented again within REFRESH_GRACE_MS of its own revocation is treated
+   * as a legitimate concurrent retry (not a reuse attack) and granted a new
+   * pair too, rather than forcing a spurious logout — see the constant's
+   * comment. Deactivated admin/supplier accounts (customers have no
+   * is_active column) are rejected here exactly like the JWT strategies
+   * reject their stale access tokens, closing the same gap for refresh.
+   */
+  async refresh(actorType: ResetPasswordActorType, rawToken: string): Promise<{ token: string; refreshToken: string }> {
+    const trx = this.uow.getClient();
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const row = await trx.selectFrom('refresh_token').selectAll().where('token_hash', '=', tokenHash).where('actor_type', '=', actorType).executeTakeFirst();
+    if (!row || row.expires_at < new Date()) {
+      throw new UnauthorizedException('invalid refresh token');
+    }
+    if (row.revoked_at) {
+      // Only a rotation (replaced_by_id set) gets grace-window leniency, and only briefly — an
+      // explicit logout (replaced_by_id left null) must reject immediately, with no window at all.
+      const isRecentRotation = row.replaced_by_id !== null && row.revoked_at.getTime() >= Date.now() - REFRESH_GRACE_MS;
+      if (!isRecentRotation) {
+        throw new UnauthorizedException('invalid refresh token');
+      }
+    }
+
+    if (actorType === 'CUSTOMER') {
+      const token = this.issueCustomerToken(row.actor_id);
+      return { token, refreshToken: await this.rotateRefreshToken(row) };
+    }
+    if (actorType === 'SUPPLIER') {
+      const supplier = await trx.selectFrom('registered_supplier').select(['is_active']).where('id', '=', row.actor_id).executeTakeFirst();
+      if (!supplier?.is_active) throw new UnauthorizedException('invalid refresh token');
+      const token = this.issueSupplierToken(row.actor_id);
+      return { token, refreshToken: await this.rotateRefreshToken(row) };
+    }
+    const admin = await trx.selectFrom('admin_user').select(['role', 'is_active']).where('id', '=', row.actor_id).executeTakeFirst();
+    if (!admin?.is_active) throw new UnauthorizedException('invalid refresh token');
+    const token = this.issueAdminToken(row.actor_id, admin.role);
+    return { token, refreshToken: await this.rotateRefreshToken(row) };
+  }
+
+  /** A second, concurrent rotation of an already-revoked-but-in-grace row just issues another fresh child, without re-touching the first rotation's revoked_at/replaced_by_id. */
+  private async rotateRefreshToken(row: { id: string; actor_type: string; actor_id: string; revoked_at: Date | null }): Promise<string> {
+    const trx = this.uow.getClient();
+    const actorType = row.actor_type as ResetPasswordActorType;
+    const newRawToken = await this.issueRefreshToken(actorType, row.actor_id);
+    if (!row.revoked_at) {
+      const newHash = createHash('sha256').update(newRawToken).digest('hex');
+      const newRow = await trx.selectFrom('refresh_token').select(['id']).where('token_hash', '=', newHash).executeTakeFirstOrThrow();
+      await trx.updateTable('refresh_token').set({ revoked_at: new Date(), replaced_by_id: newRow.id }).where('id', '=', row.id).execute();
+    }
+    return newRawToken;
+  }
+
+  /** Idempotent — revoking an unknown or already-revoked token is a no-op, not an error. */
+  async logout(actorType: ResetPasswordActorType, rawToken: string): Promise<void> {
+    const trx = this.uow.getClient();
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    await trx
+      .updateTable('refresh_token')
+      .set({ revoked_at: new Date() })
+      .where('token_hash', '=', tokenHash)
+      .where('actor_type', '=', actorType)
+      .where('revoked_at', 'is', null)
+      .execute();
+  }
+
+  async registerCustomer(dto: RegisterCustomerDto): Promise<{ token: string; refreshToken: string }> {
     const trx = this.uow.getClient();
     const existing = await trx.selectFrom('customer').select(['id']).where('email', '=', dto.email).executeTakeFirst();
     if (existing) {
@@ -78,17 +171,17 @@ export class AuthService {
       })
       .returning('id')
       .executeTakeFirstOrThrow();
-    return { token: this.issueCustomerToken(created.id) };
+    return { token: this.issueCustomerToken(created.id), refreshToken: await this.issueRefreshToken('CUSTOMER', created.id) };
   }
 
-  async loginCustomer(email: string, password: string): Promise<{ token: string }> {
+  async loginCustomer(email: string, password: string): Promise<{ token: string; refreshToken: string }> {
     const trx = this.uow.getClient();
     const customer = await trx.selectFrom('customer').select(['id', 'password_hash']).where('email', '=', email).executeTakeFirst();
     await this.assertPasswordMatches(customer?.password_hash ?? null, password);
-    return { token: this.issueCustomerToken(customer!.id) };
+    return { token: this.issueCustomerToken(customer!.id), refreshToken: await this.issueRefreshToken('CUSTOMER', customer!.id) };
   }
 
-  async loginSupplier(email: string, password: string): Promise<{ token: string }> {
+  async loginSupplier(email: string, password: string): Promise<{ token: string; refreshToken: string }> {
     const trx = this.uow.getClient();
     const supplier = await trx
       .selectFrom('registered_supplier')
@@ -96,14 +189,14 @@ export class AuthService {
       .where('contact_email', '=', email)
       .executeTakeFirst();
     await this.assertPasswordMatches(supplier?.is_active === false ? null : (supplier?.password_hash ?? null), password);
-    return { token: this.issueSupplierToken(supplier!.id) };
+    return { token: this.issueSupplierToken(supplier!.id), refreshToken: await this.issueRefreshToken('SUPPLIER', supplier!.id) };
   }
 
-  async loginAdmin(email: string, password: string): Promise<{ token: string }> {
+  async loginAdmin(email: string, password: string): Promise<{ token: string; refreshToken: string }> {
     const trx = this.uow.getClient();
     const admin = await trx.selectFrom('admin_user').select(['id', 'password_hash', 'role', 'is_active']).where('email', '=', email).executeTakeFirst();
     await this.assertPasswordMatches(admin?.is_active === false ? null : (admin?.password_hash ?? null), password);
-    return { token: this.issueAdminToken(admin!.id, admin!.role) };
+    return { token: this.issueAdminToken(admin!.id, admin!.role), refreshToken: await this.issueRefreshToken('ADMIN', admin!.id) };
   }
 
   async changeCustomerPassword(customerId: string, currentPassword: string, newPassword: string): Promise<void> {

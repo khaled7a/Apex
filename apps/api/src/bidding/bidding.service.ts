@@ -37,6 +37,38 @@ export class BiddingService {
       .execute();
   }
 
+  /**
+   * The window between bidding closing and a winner being picked
+   * (REG_ADMIN_REVIEW_BIDS/REG_SHOWN_TO_CUSTOMER/REG_CUSTOMER_SELECTS) is
+   * exactly where an order vanishes from both listBiddingBoard (no longer
+   * REG_PUBLISHED/REG_BIDS_COLLECTING) and assigned-to-me
+   * (registered_supplier_id isn't set until a winner is chosen) — a supplier
+   * who genuinely bid on it has nowhere to see it. The explicit
+   * current_state filter here is defense-in-depth on top of the
+   * order_isolation RLS clause added for this (migrations/
+   * 1700000000031_order-visibility-pending-offers.sql), matching the
+   * pattern used elsewhere in this file (e.g. listMyOffers relies on RLS
+   * alone; orders.service.ts's listAssignedToSupplier adds an explicit
+   * filter too).
+   */
+  async listMyPendingOffers() {
+    const trx = this.uow.getClient();
+    return trx
+      .selectFrom('offer')
+      .innerJoin('order', 'order.id', 'offer.order_id')
+      .innerJoin('service_type', 'service_type.id', 'order.service_type_id')
+      .where('order.current_state', 'in', ['REG_ADMIN_REVIEW_BIDS', 'REG_SHOWN_TO_CUSTOMER', 'REG_CUSTOMER_SELECTS'])
+      .select([
+        'offer.order_id',
+        'offer.fob_value_usd as myOfferFobValueUsd',
+        'offer.submitted_at',
+        'order.current_state',
+        'service_type.label_ar as serviceTypeLabel',
+      ])
+      .orderBy('offer.submitted_at', 'desc')
+      .execute();
+  }
+
   /** Fires the closed-bidding self-loop event; RLS on `offer` is what actually enforces isolation between suppliers. */
   async submitOffer(orderId: string, supplierId: string, dto: SubmitOfferDto) {
     const trx = this.uow.getClient();

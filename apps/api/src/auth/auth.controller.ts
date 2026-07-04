@@ -8,6 +8,7 @@ import { LoginDto } from './dto/login.dto';
 import { ChangePasswordDto } from './dto/change-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { CustomerAuthGuard } from './guards/customer-auth.guard';
 import { SupplierAuthGuard } from './guards/supplier-auth.guard';
 import { AdminAuthGuard } from './guards/admin-auth.guard';
@@ -71,6 +72,46 @@ export class RealAuthController {
   @Public()
   loginAdmin(@Body() dto: LoginDto) {
     return this.auth.loginAdmin(dto.email, dto.password);
+  }
+
+  @Post('customer/refresh')
+  @Public()
+  refreshCustomerToken(@Body() dto: RefreshTokenDto) {
+    return this.auth.refresh('CUSTOMER', dto.refreshToken);
+  }
+
+  @Post('supplier/refresh')
+  @Public()
+  refreshSupplierToken(@Body() dto: RefreshTokenDto) {
+    return this.auth.refresh('SUPPLIER', dto.refreshToken);
+  }
+
+  @Post('admin/refresh')
+  @Public()
+  refreshAdminToken(@Body() dto: RefreshTokenDto) {
+    return this.auth.refresh('ADMIN', dto.refreshToken);
+  }
+
+  /** No auth guard needed — knowing the raw refresh-token value is itself sufficient to revoke it, matching a logged-out session that may already carry an expired access token. */
+  @Post('customer/logout')
+  @Public()
+  async logoutCustomer(@Body() dto: RefreshTokenDto) {
+    await this.auth.logout('CUSTOMER', dto.refreshToken);
+    return { ok: true };
+  }
+
+  @Post('supplier/logout')
+  @Public()
+  async logoutSupplier(@Body() dto: RefreshTokenDto) {
+    await this.auth.logout('SUPPLIER', dto.refreshToken);
+    return { ok: true };
+  }
+
+  @Post('admin/logout')
+  @Public()
+  async logoutAdmin(@Body() dto: RefreshTokenDto) {
+    await this.auth.logout('ADMIN', dto.refreshToken);
+    return { ok: true };
   }
 
   @Post('customer/change-password')

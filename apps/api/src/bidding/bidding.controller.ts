@@ -22,6 +22,12 @@ export class BiddingController {
     return this.bidding.listBiddingBoard();
   }
 
+  @Get('my-offers')
+  @UseGuards(SupplierAuthGuard)
+  listMyPendingOffers() {
+    return this.bidding.listMyPendingOffers();
+  }
+
   @Post(':orderId/offers')
   @UseGuards(SupplierAuthGuard)
   submitOffer(@Req() req: RequestWithActor, @Param('orderId') orderId: string, @Body() dto: SubmitOfferDto) {
