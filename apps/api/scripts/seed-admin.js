@@ -36,7 +36,12 @@ async function main() {
   try {
     const passwordHash = await bcrypt.hash(password, 12);
 
-    const { rows } = await pool.query('SELECT id FROM admin_user LIMIT 1');
+    // Scoped to this specific email, not "any admin exists" — otherwise, once other
+    // admin_user rows exist (OPERATOR/ACCOUNTANT accounts, a second OWNER, ...), the old
+    // "any row" check would still take the update branch below even if SEED_ADMIN_EMAIL
+    // itself was never created, silently matching zero rows on the UPDATE while still
+    // logging a false "Updated password_hash" success message.
+    const { rows } = await pool.query('SELECT id FROM admin_user WHERE email = $1', [email]);
     if (rows.length > 0) {
       // Account exists — update password_hash for this email (allows password rotation).
       await pool.query(
