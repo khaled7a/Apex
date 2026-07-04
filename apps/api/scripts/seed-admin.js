@@ -4,8 +4,13 @@
  * There is no self-registration for admins (security-sensitive), and no
  * endpoint can create the very first one (every admin-provisioning endpoint
  * requires an existing ADMIN_OWNER) — hence a standalone script, run once,
- * outside the HTTP surface. Idempotent: no-ops if any admin_user row already
- * exists, so re-running it (e.g. on every deploy) is safe.
+ * outside the HTTP surface.
+ *
+ * Idempotent behaviour:
+ *  - If no admin_user row exists → INSERT a new OWNER account.
+ *  - If an admin_user row already exists → UPDATE password_hash for the OWNER
+ *    account matching SEED_ADMIN_EMAIL (allows rotating the password by
+ *    changing SEED_ADMIN_PASSWORD and redeploying).
  *
  * Plain CommonJS, not TypeScript: this only ever needs `pg`/`bcrypt`, both
  * real runtime dependencies (not devDependencies like ts-node/typescript),
@@ -29,18 +34,24 @@ async function main() {
 
   const pool = new Pool({ connectionString });
   try {
+    const passwordHash = await bcrypt.hash(password, 12);
+
     const { rows } = await pool.query('SELECT id FROM admin_user LIMIT 1');
     if (rows.length > 0) {
-      console.log('An admin account already exists — skipping (idempotent no-op).');
-      return;
+      // Account exists — update password_hash for this email (allows password rotation).
+      await pool.query(
+        'UPDATE admin_user SET password_hash = $1 WHERE email = $2',
+        [passwordHash, email]
+      );
+      console.log(`Updated password_hash for ADMIN_OWNER account: ${email}`);
+    } else {
+      // No admin yet — create the first OWNER.
+      await pool.query(
+        `INSERT INTO admin_user (name, email, password_hash, role, mfa_enabled) VALUES ($1, $2, $3, 'OWNER', true)`,
+        [name, email, passwordHash]
+      );
+      console.log(`Created the first ADMIN_OWNER account: ${email}`);
     }
-
-    const passwordHash = await bcrypt.hash(password, 12);
-    await pool.query(
-      `INSERT INTO admin_user (name, email, password_hash, role, mfa_enabled) VALUES ($1, $2, $3, 'OWNER', true)`,
-      [name, email, passwordHash],
-    );
-    console.log(`Created the first ADMIN_OWNER account: ${email}`);
   } finally {
     await pool.end();
   }
