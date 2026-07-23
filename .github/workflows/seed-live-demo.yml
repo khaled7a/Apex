@@ -1,0 +1,29 @@
+name: Seed Live Demo Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_deep_orders:
+        description: 'Skip orders 6-8 (require BIDDING_DEADLINE_MS shortened on Render first)'
+        type: boolean
+        default: true
+      api_base:
+        description: 'Base URL of the live apex-api service'
+        type: string
+        default: 'https://apex-api-3u2c.onrender.com'
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run seed script against the live API
+        env:
+          APEX_API_BASE: ${{ inputs.api_base }}
+          SKIP_DEEP_ORDERS: ${{ inputs.skip_deep_orders }}
+        run: node scripts/seed-live-demo.js
