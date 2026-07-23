@@ -1,6 +1,10 @@
+import { Factory, Paperclip } from 'lucide-react';
 import { getOrderDetail } from '@/lib/orders';
 import { ActionForm } from '@/components/ActionForm';
 import { uploadDesign, uploadQc, resubmit } from '@/actions/production';
+import { PageHeader } from '@/components/PageHeader';
+import { Card, SectionCard } from '@/components/Card';
+import { EmptyState } from '@/components/EmptyState';
 
 const ACTION_BY_STATE: Record<string, { action: typeof uploadDesign; label: string; title: string }> = {
   PROD_DESIGN_SUBMITTED: { action: uploadDesign, label: 'رفع التصميم', title: 'ارفع التصميم' },
@@ -17,33 +21,36 @@ export default async function ProductionPage({ params }: { params: Promise<{ ord
 
   return (
     <div className="space-y-4">
-      <h1 className="text-xl font-bold">التصنيع</h1>
+      <PageHeader icon={Factory} title="التصنيع" />
 
-      <div className="space-y-3">
-        {productionUpdates.length === 0 && <p className="text-sm text-slate-500">لا توجد تحديثات بعد.</p>}
-        {productionUpdates.map((update) => (
-          <div key={update.id} className="rounded-lg border border-slate-200 bg-white p-4">
-            <p className="text-xs font-medium text-slate-400">{new Date(update.posted_at).toLocaleString('ar-SA')}</p>
-            {update.content && <p className="mt-1 text-sm">{update.content}</p>}
-            {update.file_url && (
-              <a href={update.file_url} target="_blank" rel="noreferrer" className="mt-1 block text-sm text-emerald-700 hover:underline">
-                عرض المرفق
-              </a>
-            )}
-          </div>
-        ))}
-      </div>
+      <SectionCard icon={Factory} title="التحديثات">
+        <div className="space-y-3">
+          {productionUpdates.length === 0 && <EmptyState icon={Factory} message="لا توجد تحديثات بعد." />}
+          {productionUpdates.map((update) => (
+            <div key={update.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+              <p className="text-xs font-medium text-slate-400">{new Date(update.posted_at).toLocaleString('ar-SA')}</p>
+              {update.content && <p className="mt-1 text-sm">{update.content}</p>}
+              {update.file_url && (
+                <a href={update.file_url} target="_blank" rel="noreferrer" className="mt-1 flex items-center gap-1.5 text-sm text-emerald-700 hover:underline">
+                  <Paperclip className="h-3.5 w-3.5" strokeWidth={2} />
+                  عرض المرفق
+                </a>
+              )}
+            </div>
+          ))}
+        </div>
+      </SectionCard>
 
       {current && (
-        <div className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 font-semibold">{current.title}</h2>
+        <Card>
+          <h2 className="mb-3 font-semibold text-slate-900">{current.title}</h2>
           <ActionForm action={current.action} hidden={{ orderId, expectedStateVersion: order.state_version }} submitLabel={current.label}>
             <div className="space-y-3">
               <textarea name="content" placeholder="وصف (اختياري إن أُرفق ملف)" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
               <input name="file" type="file" accept="image/*,.pdf" className="w-full text-sm" />
             </div>
           </ActionForm>
-        </div>
+        </Card>
       )}
     </div>
   );

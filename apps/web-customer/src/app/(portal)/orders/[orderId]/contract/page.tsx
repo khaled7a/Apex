@@ -1,5 +1,8 @@
+import { FileText, Receipt, PenLine } from 'lucide-react';
 import { getOrderDetail } from '@/lib/orders';
 import { ActionForm } from '@/components/ActionForm';
+import { PageHeader } from '@/components/PageHeader';
+import { SectionCard } from '@/components/Card';
 import { signContract } from '@/actions/contracts';
 
 export default async function ContractPage({ params }: { params: Promise<{ orderId: string }> }) {
@@ -8,12 +11,11 @@ export default async function ContractPage({ params }: { params: Promise<{ order
   const { order, paymentPlan, installments } = detail;
 
   return (
-    <div className="space-y-4">
-      <h1 className="text-xl font-bold">العقد وخطة الدفع</h1>
+    <div className="space-y-6">
+      <PageHeader icon={FileText} title="العقد وخطة الدفع" />
 
       {paymentPlan && (
-        <div className="rounded-lg border border-slate-200 bg-white p-4">
-          <h2 className="mb-2 font-semibold">الدفعات ({installments.length})</h2>
+        <SectionCard icon={Receipt} title={`الدفعات (${installments.length})`}>
           <ul className="divide-y divide-slate-100">
             {installments.map((installment) => (
               <li key={installment.id} className="flex items-center justify-between py-2 text-sm">
@@ -22,14 +24,13 @@ export default async function ContractPage({ params }: { params: Promise<{ order
               </li>
             ))}
           </ul>
-        </div>
+        </SectionCard>
       )}
 
-      <div className="rounded-lg border border-slate-200 bg-white p-5">
-        <h2 className="mb-2 font-semibold">التوقيع الإلكتروني</h2>
+      <SectionCard icon={PenLine} title="التوقيع الإلكتروني">
         <p className="mb-3 text-sm text-slate-600">اكتب اسمك الكامل للتوقيع الإلكتروني والموافقة على شروط العقد.</p>
         <SignForm orderId={order.id} stateVersion={order.state_version} />
-      </div>
+      </SectionCard>
     </div>
   );
 }

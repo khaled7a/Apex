@@ -1,5 +1,8 @@
+import { Star } from 'lucide-react';
 import { getOrderDetail } from '@/lib/orders';
 import { ActionForm } from '@/components/ActionForm';
+import { PageHeader } from '@/components/PageHeader';
+import { Card } from '@/components/Card';
 import { rateSupplier } from '@/actions/delivery';
 
 export default async function RatingPage({ params }: { params: Promise<{ orderId: string }> }) {
@@ -8,10 +11,10 @@ export default async function RatingPage({ params }: { params: Promise<{ orderId
   const { order } = detail;
 
   return (
-    <div className="mx-auto max-w-md space-y-4">
-      <h1 className="text-xl font-bold">تقييم المورد</h1>
+    <div className="mx-auto max-w-md space-y-6">
+      <PageHeader icon={Star} title="تقييم المورد" />
       {order.current_state === 'CUSTOMER_SIGNED' ? (
-        <div className="rounded-lg border border-slate-200 bg-white p-5">
+        <Card>
           <ActionForm action={rateSupplier} hidden={{ orderId, expectedStateVersion: order.state_version }} submitLabel="إرسال التقييم">
             <div className="space-y-3">
               <div>
@@ -27,7 +30,7 @@ export default async function RatingPage({ params }: { params: Promise<{ orderId
               <textarea name="notes" placeholder="ملاحظات (اختياري)" className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
             </div>
           </ActionForm>
-        </div>
+        </Card>
       ) : (
         <p className="text-sm text-slate-600">التقييم متاح بعد توقيع استلام الشحنة.</p>
       )}
