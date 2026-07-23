@@ -1,7 +1,21 @@
 import Link from 'next/link';
+import {
+  Package,
+  Sparkles,
+  AlertCircle,
+  User,
+  Truck,
+  Banknote,
+  Wallet,
+  Landmark,
+  AlertTriangle,
+  History,
+} from 'lucide-react';
 import { getAuditLog, getOrderDetail } from '@/lib/orders';
 import { OrderStateBadge } from '@/components/OrderStateBadge';
 import { OrderTimeline } from '@/components/OrderTimeline';
+import { SectionCard } from '@/components/Card';
+import { EmptyState } from '@/components/EmptyState';
 import { getAdminAction, orderStateLabel } from '@/lib/state-labels';
 
 function money(value: string | null): string {
@@ -18,16 +32,24 @@ export default async function OrderHubPage({ params }: { params: Promise<{ order
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="font-mono text-xs text-slate-400">#{order.id}</p>
-          <h1 className="text-xl font-bold">تفاصيل الطلب</h1>
+      <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex items-center gap-3">
+          <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
+            <Package className="h-5.5 w-5.5" strokeWidth={2} />
+          </span>
+          <div>
+            <p className="font-mono text-xs text-slate-400">#{order.id}</p>
+            <h1 className="text-lg font-bold text-slate-900">تفاصيل الطلب</h1>
+          </div>
         </div>
         <OrderStateBadge state={order.current_state} holdType={order.hold_type} />
       </div>
 
-      <section className="rounded-lg border border-emerald-200 bg-emerald-50 p-5">
-        <h2 className="mb-3 font-semibold text-emerald-900">ماذا الآن؟</h2>
+      <section className="rounded-xl border border-emerald-200 bg-gradient-to-br from-emerald-50 to-white p-5">
+        <h2 className="mb-3 flex items-center gap-2 font-semibold text-emerald-900">
+          <Sparkles className="h-4.5 w-4.5" strokeWidth={2} />
+          ماذا الآن؟
+        </h2>
         {action.waiting ? (
           <p className="text-sm text-emerald-800">{action.label}</p>
         ) : (
@@ -41,7 +63,8 @@ export default async function OrderHubPage({ params }: { params: Promise<{ order
       </section>
 
       {order.hold_type === 'NONE' && (
-        <p className="text-sm text-slate-600">
+        <p className="flex items-center gap-1.5 text-sm text-slate-600">
+          <AlertCircle className="h-4 w-4 text-slate-400" strokeWidth={2} />
           هل يوجد نزاع على هذا الطلب؟{' '}
           <Link href={`/orders/${order.id}/dispute/new`} className="font-medium text-emerald-700 hover:underline">
             افتح نزاعاً
@@ -50,8 +73,7 @@ export default async function OrderHubPage({ params }: { params: Promise<{ order
       )}
 
       <div className="grid gap-6 sm:grid-cols-2">
-        <section className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 font-semibold">العميل</h2>
+        <SectionCard icon={User} title="العميل">
           <dl className="space-y-1 text-sm">
             <div className="flex justify-between"><dt className="text-slate-500">الاسم</dt><dd>{detail.customer.name}</dd></div>
             <div className="flex justify-between"><dt className="text-slate-500">الشركة</dt><dd>{detail.customer.company_name ?? '—'}</dd></div>
@@ -59,10 +81,9 @@ export default async function OrderHubPage({ params }: { params: Promise<{ order
             <div className="flex justify-between"><dt className="text-slate-500">الهاتف</dt><dd>{detail.customer.phone}</dd></div>
             <div className="flex justify-between"><dt className="text-slate-500">السجل التجاري</dt><dd>{detail.customer.cr_number ?? '—'}</dd></div>
           </dl>
-        </section>
+        </SectionCard>
 
-        <section className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 font-semibold">المورد</h2>
+        <SectionCard icon={Truck} title="المورد">
           {detail.registeredSupplier ? (
             <dl className="space-y-1 text-sm">
               <div className="flex justify-between"><dt className="text-slate-500">الاسم (مسجَّل)</dt><dd>{detail.registeredSupplier.legal_name}</dd></div>
@@ -76,10 +97,9 @@ export default async function OrderHubPage({ params }: { params: Promise<{ order
           ) : (
             <p className="text-sm text-slate-500">لم يُختر مورد بعد.</p>
           )}
-        </section>
+        </SectionCard>
 
-        <section className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 font-semibold">القيمة المالية</h2>
+        <SectionCard icon={Banknote} title="القيمة المالية">
           <dl className="space-y-1 text-sm">
             <div className="flex justify-between"><dt className="text-slate-500">قيمة FOB (USD)</dt><dd>{order.fob_value_usd ?? '—'}</dd></div>
             <div className="flex justify-between"><dt className="text-slate-500">سعر الصرف</dt><dd>{order.fx_rate_used ?? '—'}</dd></div>
@@ -88,10 +108,9 @@ export default async function OrderHubPage({ params }: { params: Promise<{ order
               <div className="flex justify-between text-amber-700"><dt>انحراف سعر الصرف</dt><dd>{order.fx_rate_deviation_approved_at ? 'معتمَد' : 'بانتظار اعتماد OWNER'}</dd></div>
             )}
           </dl>
-        </section>
+        </SectionCard>
 
-        <section className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 font-semibold">خطة الدفع</h2>
+        <SectionCard icon={Wallet} title="خطة الدفع">
           {detail.installments.length === 0 ? (
             <p className="text-sm text-slate-500">لم تُنشأ خطة دفع بعد.</p>
           ) : (
@@ -104,12 +123,11 @@ export default async function OrderHubPage({ params }: { params: Promise<{ order
               ))}
             </ul>
           )}
-        </section>
+        </SectionCard>
       </div>
 
       {detail.customsFees.length > 0 && (
-        <section className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 font-semibold">رسوم التخليص</h2>
+        <SectionCard icon={Landmark} title="رسوم التخليص">
           <ul className="space-y-1 text-sm">
             {detail.customsFees.map((fee) => (
               <li key={fee.id} className="flex justify-between">
@@ -118,12 +136,11 @@ export default async function OrderHubPage({ params }: { params: Promise<{ order
               </li>
             ))}
           </ul>
-        </section>
+        </SectionCard>
       )}
 
       {(detail.disputes.length > 0 || detail.escalations.length > 0 || detail.renewals.length > 0) && (
-        <section className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 font-semibold">النزاعات والتصعيدات والتجديدات</h2>
+        <SectionCard icon={AlertTriangle} title="النزاعات والتصعيدات والتجديدات">
           <ul className="space-y-1 text-sm">
             {detail.disputes.map((d) => (
               <li key={d.id}>نزاع {d.type} — {d.status}</li>
@@ -135,18 +152,16 @@ export default async function OrderHubPage({ params }: { params: Promise<{ order
               <li key={r.id}>تجديد — المورد: {r.supplier_decision}، الإدارة: {r.admin_decision}</li>
             ))}
           </ul>
-        </section>
+        </SectionCard>
       )}
 
-      <section className="rounded-lg border border-slate-200 bg-white p-5">
-        <h2 className="mb-3 font-semibold">سجل الطلب</h2>
+      <SectionCard icon={History} title="سجل الطلب">
         <OrderTimeline entries={detail.timeline} />
-      </section>
+      </SectionCard>
 
-      <section className="rounded-lg border border-slate-200 bg-white p-5">
-        <h2 className="mb-3 font-semibold">سجل التدقيق (Audit Log)</h2>
+      <SectionCard icon={History} title="سجل التدقيق (Audit Log)">
         {auditLog.length === 0 ? (
-          <p className="text-sm text-slate-500">لا يوجد سجل بعد.</p>
+          <EmptyState icon={History} message="لا يوجد سجل بعد." />
         ) : (
           <ul className="space-y-2 text-xs">
             {auditLog.map((entry) => (
@@ -158,7 +173,7 @@ export default async function OrderHubPage({ params }: { params: Promise<{ order
             ))}
           </ul>
         )}
-      </section>
+      </SectionCard>
 
       <p className="text-xs text-slate-400">{orderStateLabel(order.current_state)}</p>
     </div>

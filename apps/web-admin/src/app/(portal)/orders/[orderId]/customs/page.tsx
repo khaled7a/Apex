@@ -1,6 +1,9 @@
+import { Landmark, PlusCircle, ListChecks, ShieldCheck, XCircle, CheckCircle2 } from 'lucide-react';
 import { getMe } from '@/lib/accounts';
 import { getOrderDetail } from '@/lib/orders';
 import { ActionForm } from '@/components/ActionForm';
+import { PageHeader } from '@/components/PageHeader';
+import { SectionCard } from '@/components/Card';
 import { addMoreFees, approveFee, createFee, noMoreFees, rejectProof, adminVerifiesFee, startCustoms } from '@/actions/customs';
 
 export default async function CustomsPage({ params }: { params: Promise<{ orderId: string }> }) {
@@ -11,28 +14,25 @@ export default async function CustomsPage({ params }: { params: Promise<{ orderI
 
   return (
     <div className="mx-auto max-w-lg space-y-4">
-      <h1 className="text-xl font-bold">رسوم التخليص الجمركي</h1>
+      <PageHeader icon={Landmark} title="رسوم التخليص الجمركي" />
 
       {order.current_state === 'ARRIVED_PORT' && (
-        <div className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 font-semibold">بدء إجراءات التخليص</h2>
+        <SectionCard icon={Landmark} title="بدء إجراءات التخليص">
           <ActionForm action={startCustoms} hidden={{ orderId, expectedStateVersion: order.state_version }} submitLabel="بدء" />
-        </div>
+        </SectionCard>
       )}
 
       {(order.current_state === 'CUSTOMS_FEE_ADDED' || order.current_state === 'CUSTOMS_FEE_VERIFIED') && (
-        <div className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 font-semibold">إضافة رسم جديد</h2>
+        <SectionCard icon={PlusCircle} title="إضافة رسم جديد">
           <ActionForm action={createFee} hidden={{ orderId }} submitLabel="إضافة">
             <input name="label" placeholder="وصف الرسم" required className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
             <input name="amountSar" type="number" step="0.01" placeholder="المبلغ (ريال)" required className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
           </ActionForm>
-        </div>
+        </SectionCard>
       )}
 
       {detail.customsFees.length > 0 && (
-        <div className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 font-semibold">الرسوم الحالية</h2>
+        <SectionCard icon={ListChecks} title="الرسوم الحالية">
           <ul className="space-y-3 text-sm">
             {detail.customsFees.map((fee) => (
               <li key={fee.id} className="flex items-center justify-between border-b border-slate-100 pb-2">
@@ -47,17 +47,23 @@ export default async function CustomsPage({ params }: { params: Promise<{ orderI
               </li>
             ))}
           </ul>
-        </div>
+        </SectionCard>
       )}
 
       {order.current_state === 'CUSTOMS_FEE_PROOF_UPLOADED' && (
         <div className="grid gap-4 sm:grid-cols-2">
-          <div className="rounded-lg border border-emerald-200 bg-white p-5">
-            <h2 className="mb-3 font-semibold">التحقق من إثبات الدفع</h2>
+          <div className="rounded-xl border border-emerald-200 bg-white p-5 shadow-sm">
+            <h2 className="mb-3 flex items-center gap-2 font-semibold text-emerald-900">
+              <ShieldCheck className="h-4.5 w-4.5 text-emerald-700" strokeWidth={2} />
+              التحقق من إثبات الدفع
+            </h2>
             <ActionForm action={adminVerifiesFee} hidden={{ orderId, expectedStateVersion: order.state_version }} submitLabel="تحقق" />
           </div>
-          <div className="rounded-lg border border-red-200 bg-white p-5">
-            <h2 className="mb-3 font-semibold">رفض الإثبات</h2>
+          <div className="rounded-xl border border-red-200 bg-white p-5 shadow-sm">
+            <h2 className="mb-3 flex items-center gap-2 font-semibold text-red-900">
+              <XCircle className="h-4.5 w-4.5 text-red-600" strokeWidth={2} />
+              رفض الإثبات
+            </h2>
             <ActionForm action={rejectProof} hidden={{ orderId, expectedStateVersion: order.state_version }} submitLabel="رفض">
               <textarea name="reason" placeholder="سبب الرفض" required className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
             </ActionForm>
@@ -66,13 +72,12 @@ export default async function CustomsPage({ params }: { params: Promise<{ orderI
       )}
 
       {order.current_state === 'CUSTOMS_FEE_VERIFIED' && (
-        <div className="rounded-lg border border-slate-200 bg-white p-5">
-          <h2 className="mb-3 font-semibold">إنهاء مرحلة الجمارك</h2>
+        <SectionCard icon={CheckCircle2} title="إنهاء مرحلة الجمارك">
           <div className="flex gap-3">
             <ActionForm action={addMoreFees} hidden={{ orderId, expectedStateVersion: order.state_version }} submitLabel="إضافة رسوم أخرى" />
             <ActionForm action={noMoreFees} hidden={{ orderId, expectedStateVersion: order.state_version }} submitLabel="لا مزيد — متابعة للتسليم" />
           </div>
-        </div>
+        </SectionCard>
       )}
     </div>
   );

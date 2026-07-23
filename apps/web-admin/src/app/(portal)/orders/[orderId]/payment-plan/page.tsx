@@ -1,5 +1,9 @@
+import { Wallet } from 'lucide-react';
 import { getOrderDetail } from '@/lib/orders';
 import { ActionForm } from '@/components/ActionForm';
+import { PageHeader } from '@/components/PageHeader';
+import { SectionCard } from '@/components/Card';
+import { EmptyState } from '@/components/EmptyState';
 import { createPaymentPlan } from '@/actions/contracts';
 
 export default async function PaymentPlanPage({ params }: { params: Promise<{ orderId: string }> }) {
@@ -9,17 +13,20 @@ export default async function PaymentPlanPage({ params }: { params: Promise<{ or
 
   if (order.current_state !== 'CONTRACT_PAYMENT_PLAN_CREATED' || detail.installments.length > 0) {
     return (
-      <div className="mx-auto max-w-md">
-        <h1 className="mb-4 text-xl font-bold">خطة الدفع</h1>
-        <p className="text-sm text-slate-500">{detail.installments.length > 0 ? 'خطة الدفع منشأة بالفعل.' : 'لا يوجد إجراء متاح في هذه المرحلة.'}</p>
+      <div className="mx-auto max-w-md space-y-4">
+        <PageHeader icon={Wallet} title="خطة الدفع" />
+        <EmptyState
+          icon={Wallet}
+          message={detail.installments.length > 0 ? 'خطة الدفع منشأة بالفعل.' : 'لا يوجد إجراء متاح في هذه المرحلة.'}
+        />
       </div>
     );
   }
 
   return (
     <div className="mx-auto max-w-md space-y-4">
-      <h1 className="text-xl font-bold">إنشاء خطة الدفع</h1>
-      <div className="rounded-lg border border-slate-200 bg-white p-5">
+      <PageHeader icon={Wallet} title="إنشاء خطة الدفع" />
+      <SectionCard icon={Wallet} title="التفاصيل">
         <ActionForm action={createPaymentPlan} hidden={{ orderId }} submitLabel="إنشاء الخطة">
           <fieldset className="space-y-2 rounded-md border border-slate-200 p-3">
             <legend className="px-1 text-xs text-slate-500">الدفعة الأولى</legend>
@@ -32,7 +39,7 @@ export default async function PaymentPlanPage({ params }: { params: Promise<{ or
             <input name="installment2Amount" type="number" step="0.01" placeholder="المبلغ (ريال)" required className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
           </fieldset>
         </ActionForm>
-      </div>
+      </SectionCard>
     </div>
   );
 }

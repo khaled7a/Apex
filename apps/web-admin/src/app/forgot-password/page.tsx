@@ -2,17 +2,26 @@
 
 import { useActionState } from 'react';
 import Link from 'next/link';
+import { KeyRound } from 'lucide-react';
 import { forgotPassword } from '@/actions/password-reset';
+import { Logo } from '@/components/Logo';
 import { SubmitButton } from '@/components/SubmitButton';
 
 export default function ForgotPasswordPage() {
   const [state, formAction] = useActionState(forgotPassword, undefined);
 
   return (
-    <div className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-4">
-      <h1 className="mb-6 text-center text-2xl font-bold text-emerald-800">إيبيكس سورس — بوابة الإدارة</h1>
-      <div className="space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold">نسيت كلمة المرور؟</h2>
+    <div className="flex min-h-screen flex-col items-center justify-center bg-slate-50 px-4">
+      <div className="mb-6">
+        <Logo className="text-xl text-emerald-800" suffix="الإدارة" />
+      </div>
+      <div className="w-full max-w-sm space-y-4 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <h1 className="flex items-center gap-2 text-lg font-semibold text-slate-900">
+          <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
+            <KeyRound className="h-4.5 w-4.5" strokeWidth={2} />
+          </span>
+          نسيت كلمة المرور؟
+        </h1>
         {state?.success ? (
           <p className="text-sm text-emerald-700">إن كان البريد الإلكتروني مسجَّلاً لدينا، ستصلك رسالة تحتوي رابط إعادة التعيين خلال دقائق.</p>
         ) : (
