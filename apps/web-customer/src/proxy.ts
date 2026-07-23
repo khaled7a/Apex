@@ -5,7 +5,7 @@ import { SESSION_COOKIE, REFRESH_COOKIE, ACCESS_MAX_AGE_SECONDS, REFRESH_MAX_AGE
 // Renamed from Middleware in Next.js 16 — runs on the Node.js runtime by
 // default (16.0+), so a plain fetch() to the backend below is unremarkable,
 // no Edge-runtime constraints apply.
-const PUBLIC_PATHS = ['/login', '/register', '/forgot-password', '/reset-password'];
+const PUBLIC_PATHS = ['/login', '/register', '/forgot-password', '/reset-password', '/sso'];
 const REFRESH_ENDPOINT = '/auth/customer/refresh';
 const API_URL = process.env.API_URL ?? 'http://localhost:3000';
 const REFRESH_THRESHOLD_SECONDS = 5 * 60;

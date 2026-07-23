@@ -9,6 +9,7 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { ConsumeSsoCodeDto } from './dto/consume-sso-code.dto';
 import { CustomerAuthGuard } from './guards/customer-auth.guard';
 import { SupplierAuthGuard } from './guards/supplier-auth.guard';
 import { AdminAuthGuard } from './guards/admin-auth.guard';
@@ -90,6 +91,19 @@ export class RealAuthController {
   @Public()
   refreshAdminToken(@Body() dto: RefreshTokenDto) {
     return this.auth.refresh('ADMIN', dto.refreshToken);
+  }
+
+  /**
+   * Called by each portal's own src/app/sso/route.ts (a server-to-server
+   * Route Handler, never the browser directly) after the unified
+   * login/landing page (apps/web-landing) redirects here with a one-time
+   * code — see AuthService.consumeSsoHandoffCode for why nothing sensitive
+   * ever traveled through that redirect URL.
+   */
+  @Post('sso/consume')
+  @Public()
+  consumeSso(@Body() dto: ConsumeSsoCodeDto) {
+    return this.auth.consumeSsoHandoffCode(dto.actorType, dto.code);
   }
 
   /** No auth guard needed — knowing the raw refresh-token value is itself sufficient to revoke it, matching a logged-out session that may already carry an expired access token. */

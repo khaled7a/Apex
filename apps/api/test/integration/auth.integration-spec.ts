@@ -290,4 +290,103 @@ describe('Apex Sourcing — real credential-based auth (real PostgreSQL, no mock
       await request(server).post('/auth/admin/refresh').send({ refreshToken: register.body.refreshToken }).expect(401);
     });
   });
+
+  describe('sso handoff code (apps/web-landing cross-origin session handoff)', () => {
+    async function backdateExpiry(ssoCode: string, secondsAgo: number): Promise<void> {
+      const codeHash = createHash('sha256').update(ssoCode).digest('hex');
+      await db
+        .updateTable('sso_handoff_code')
+        .set({ expires_at: new Date(Date.now() - secondsAgo * 1000) })
+        .where('code_hash', '=', codeHash)
+        .execute();
+    }
+
+    it('register/login for all three actor types include a consumable ssoCode', async () => {
+      const OWNER_ID = 'a1111111-1111-1111-1111-111111111111';
+      await db.insertInto('admin_user').values({ id: OWNER_ID, name: 'Khaled Owner', email: 'sso-owner@apex.sa', role: 'OWNER', mfa_enabled: true }).execute();
+      const ownerToken = (await request(server).post('/auth/dev/admin-token').send({ adminId: OWNER_ID, role: 'OWNER' })).body.token;
+
+      const register = await request(server)
+        .post('/auth/customer/register')
+        .send({ name: 'Ahmed', email: 'sso-customer@example.com', phone: '0500000001', password: 'correct-horse-battery' })
+        .expect(201);
+      expect(register.body.ssoCode).toEqual(expect.any(String));
+
+      await request(server)
+        .post('/admin/suppliers')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ legalName: 'Guangzhou Trading Co', contactEmail: 'sso-supplier@example.com', password: 'supplier-password-123' })
+        .expect(201);
+      const supplierLogin = await request(server).post('/auth/supplier/login').send({ email: 'sso-supplier@example.com', password: 'supplier-password-123' }).expect(201);
+      expect(supplierLogin.body.ssoCode).toEqual(expect.any(String));
+
+      await request(server)
+        .post('/admin/admins')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ name: 'New Operator', email: 'sso-admin@apex.sa', password: 'admin-password-123', role: 'OPERATOR' })
+        .expect(201);
+      const adminLogin = await request(server).post('/auth/admin/login').send({ email: 'sso-admin@apex.sa', password: 'admin-password-123' }).expect(201);
+      expect(adminLogin.body.ssoCode).toEqual(expect.any(String));
+    });
+
+    it('consumes a customer ssoCode for a real session, and rejects reusing it', async () => {
+      const register = await request(server)
+        .post('/auth/customer/register')
+        .send({ name: 'Ahmed', email: 'sso-consume1@example.com', phone: '0500000001', password: 'correct-horse-battery' })
+        .expect(201);
+
+      const consumed = await request(server).post('/auth/sso/consume').send({ actorType: 'CUSTOMER', code: register.body.ssoCode }).expect(201);
+      expect(consumed.body.token).toEqual(expect.any(String));
+      expect(consumed.body.refreshToken).toEqual(expect.any(String));
+      // The consumed session is entirely fresh, not a replay of what register() already returned.
+      expect(consumed.body.refreshToken).not.toBe(register.body.refreshToken);
+
+      await request(server).post('/auth/sso/consume').send({ actorType: 'CUSTOMER', code: register.body.ssoCode }).expect(401);
+    });
+
+    it('consumes a supplier ssoCode, and rejects one issued for a deactivated supplier', async () => {
+      const OWNER_ID = 'a1111111-1111-1111-1111-111111111111';
+      await db.insertInto('admin_user').values({ id: OWNER_ID, name: 'Khaled Owner', email: 'sso-owner2@apex.sa', role: 'OWNER', mfa_enabled: true }).execute();
+      const ownerToken = (await request(server).post('/auth/dev/admin-token').send({ adminId: OWNER_ID, role: 'OWNER' })).body.token;
+
+      await request(server)
+        .post('/admin/suppliers')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ legalName: 'Guangzhou Trading Co', contactEmail: 'sso-supplier2@example.com', password: 'supplier-password-123' })
+        .expect(201);
+      const login = await request(server).post('/auth/supplier/login').send({ email: 'sso-supplier2@example.com', password: 'supplier-password-123' }).expect(201);
+      await request(server).post('/auth/sso/consume').send({ actorType: 'SUPPLIER', code: login.body.ssoCode }).expect(201);
+
+      const secondLogin = await request(server).post('/auth/supplier/login').send({ email: 'sso-supplier2@example.com', password: 'supplier-password-123' }).expect(201);
+      const suppliers = await db.selectFrom('registered_supplier').select(['id']).where('contact_email', '=', 'sso-supplier2@example.com').executeTakeFirstOrThrow();
+      await request(server).post(`/admin/suppliers/${suppliers.id}/deactivate`).set('Authorization', `Bearer ${ownerToken}`).expect(201);
+      await request(server).post('/auth/sso/consume').send({ actorType: 'SUPPLIER', code: secondLogin.body.ssoCode }).expect(401);
+    });
+
+    it('rejects an expired ssoCode', async () => {
+      const register = await request(server)
+        .post('/auth/customer/register')
+        .send({ name: 'Ahmed', email: 'sso-expired@example.com', phone: '0500000001', password: 'correct-horse-battery' })
+        .expect(201);
+
+      await backdateExpiry(register.body.ssoCode, 61);
+      await request(server).post('/auth/sso/consume').send({ actorType: 'CUSTOMER', code: register.body.ssoCode }).expect(401);
+    });
+
+    it('rejects a code consumed with the wrong actorType', async () => {
+      const register = await request(server)
+        .post('/auth/customer/register')
+        .send({ name: 'Ahmed', email: 'sso-wrongtype@example.com', phone: '0500000001', password: 'correct-horse-battery' })
+        .expect(201);
+
+      await request(server).post('/auth/sso/consume').send({ actorType: 'SUPPLIER', code: register.body.ssoCode }).expect(401);
+      await request(server).post('/auth/sso/consume').send({ actorType: 'ADMIN', code: register.body.ssoCode }).expect(401);
+      // The unused code is still good for its real actor type.
+      await request(server).post('/auth/sso/consume').send({ actorType: 'CUSTOMER', code: register.body.ssoCode }).expect(201);
+    });
+
+    it('rejects an unknown code outright', async () => {
+      await request(server).post('/auth/sso/consume').send({ actorType: 'CUSTOMER', code: 'not-a-real-code' }).expect(401);
+    });
+  });
 });

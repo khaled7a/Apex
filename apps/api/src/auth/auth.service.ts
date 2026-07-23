@@ -16,6 +16,10 @@ import { EmailProvider } from '../notifications/providers/email.provider';
 
 const BCRYPT_ROUNDS = 12;
 const RESET_TOKEN_TTL_MS = 30 * 60 * 1000;
+// Deliberately short — this is only ever alive for the few hundred ms
+// between the landing page's redirect and the destination portal's Route
+// Handler consuming it server-to-server, see consumeSsoHandoffCode below.
+const SSO_CODE_TTL_MS = 60 * 1000;
 const ACCESS_TOKEN_TTL = '1h';
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 // A concurrent refresh (e.g. two Next.js prefetches racing on the same soon-to-expire
@@ -139,6 +143,54 @@ export class AuthService {
     return newRawToken;
   }
 
+  /**
+   * Backs the unified login/landing page (apps/web-landing): 3 separate
+   * portal origins can't share an httpOnly session cookie, so a real login
+   * there hands off to the right portal via a redirect carrying this
+   * single-use, 60s-lived opaque code instead of the actual JWT/refresh
+   * token — see migrations/..._sso-handoff-code.sql for why nothing
+   * sensitive is stored here at all.
+   */
+  private async issueSsoHandoffCode(actorType: ResetPasswordActorType, actorId: string): Promise<string> {
+    const trx = this.uow.getClient();
+    const rawCode = randomBytes(24).toString('hex');
+    const codeHash = createHash('sha256').update(rawCode).digest('hex');
+    await trx
+      .insertInto('sso_handoff_code')
+      .values({ actor_type: actorType, actor_id: actorId, code_hash: codeHash, expires_at: new Date(Date.now() + SSO_CODE_TTL_MS) })
+      .execute();
+    return rawCode;
+  }
+
+  /**
+   * Mints an entirely fresh session pair for the code's actor — nothing
+   * issued back at login/register time is replayed here, since the code
+   * itself never carried a token/refreshToken to begin with. Deactivated
+   * admin/supplier accounts are rejected exactly like refresh()/the JWT
+   * strategies reject theirs.
+   */
+  async consumeSsoHandoffCode(actorType: ResetPasswordActorType, code: string): Promise<{ token: string; refreshToken: string }> {
+    const trx = this.uow.getClient();
+    const codeHash = createHash('sha256').update(code).digest('hex');
+    const row = await trx.selectFrom('sso_handoff_code').selectAll().where('code_hash', '=', codeHash).where('actor_type', '=', actorType).executeTakeFirst();
+    if (!row || row.used_at || row.expires_at < new Date()) {
+      throw new UnauthorizedException('invalid or expired sso code');
+    }
+    await trx.updateTable('sso_handoff_code').set({ used_at: new Date() }).where('id', '=', row.id).execute();
+
+    if (actorType === 'CUSTOMER') {
+      return { token: this.issueCustomerToken(row.actor_id), refreshToken: await this.issueRefreshToken('CUSTOMER', row.actor_id) };
+    }
+    if (actorType === 'SUPPLIER') {
+      const supplier = await trx.selectFrom('registered_supplier').select(['is_active']).where('id', '=', row.actor_id).executeTakeFirst();
+      if (!supplier?.is_active) throw new UnauthorizedException('invalid or expired sso code');
+      return { token: this.issueSupplierToken(row.actor_id), refreshToken: await this.issueRefreshToken('SUPPLIER', row.actor_id) };
+    }
+    const admin = await trx.selectFrom('admin_user').select(['role', 'is_active']).where('id', '=', row.actor_id).executeTakeFirst();
+    if (!admin?.is_active) throw new UnauthorizedException('invalid or expired sso code');
+    return { token: this.issueAdminToken(row.actor_id, admin.role), refreshToken: await this.issueRefreshToken('ADMIN', row.actor_id) };
+  }
+
   /** Idempotent — revoking an unknown or already-revoked token is a no-op, not an error. */
   async logout(actorType: ResetPasswordActorType, rawToken: string): Promise<void> {
     const trx = this.uow.getClient();
@@ -152,7 +204,7 @@ export class AuthService {
       .execute();
   }
 
-  async registerCustomer(dto: RegisterCustomerDto): Promise<{ token: string; refreshToken: string }> {
+  async registerCustomer(dto: RegisterCustomerDto): Promise<{ token: string; refreshToken: string; ssoCode: string }> {
     const trx = this.uow.getClient();
     const existing = await trx.selectFrom('customer').select(['id']).where('email', '=', dto.email).executeTakeFirst();
     if (existing) {
@@ -171,17 +223,25 @@ export class AuthService {
       })
       .returning('id')
       .executeTakeFirstOrThrow();
-    return { token: this.issueCustomerToken(created.id), refreshToken: await this.issueRefreshToken('CUSTOMER', created.id) };
+    return {
+      token: this.issueCustomerToken(created.id),
+      refreshToken: await this.issueRefreshToken('CUSTOMER', created.id),
+      ssoCode: await this.issueSsoHandoffCode('CUSTOMER', created.id),
+    };
   }
 
-  async loginCustomer(email: string, password: string): Promise<{ token: string; refreshToken: string }> {
+  async loginCustomer(email: string, password: string): Promise<{ token: string; refreshToken: string; ssoCode: string }> {
     const trx = this.uow.getClient();
     const customer = await trx.selectFrom('customer').select(['id', 'password_hash']).where('email', '=', email).executeTakeFirst();
     await this.assertPasswordMatches(customer?.password_hash ?? null, password);
-    return { token: this.issueCustomerToken(customer!.id), refreshToken: await this.issueRefreshToken('CUSTOMER', customer!.id) };
+    return {
+      token: this.issueCustomerToken(customer!.id),
+      refreshToken: await this.issueRefreshToken('CUSTOMER', customer!.id),
+      ssoCode: await this.issueSsoHandoffCode('CUSTOMER', customer!.id),
+    };
   }
 
-  async loginSupplier(email: string, password: string): Promise<{ token: string; refreshToken: string }> {
+  async loginSupplier(email: string, password: string): Promise<{ token: string; refreshToken: string; ssoCode: string }> {
     const trx = this.uow.getClient();
     const supplier = await trx
       .selectFrom('registered_supplier')
@@ -189,14 +249,22 @@ export class AuthService {
       .where('contact_email', '=', email)
       .executeTakeFirst();
     await this.assertPasswordMatches(supplier?.is_active === false ? null : (supplier?.password_hash ?? null), password);
-    return { token: this.issueSupplierToken(supplier!.id), refreshToken: await this.issueRefreshToken('SUPPLIER', supplier!.id) };
+    return {
+      token: this.issueSupplierToken(supplier!.id),
+      refreshToken: await this.issueRefreshToken('SUPPLIER', supplier!.id),
+      ssoCode: await this.issueSsoHandoffCode('SUPPLIER', supplier!.id),
+    };
   }
 
-  async loginAdmin(email: string, password: string): Promise<{ token: string; refreshToken: string }> {
+  async loginAdmin(email: string, password: string): Promise<{ token: string; refreshToken: string; ssoCode: string }> {
     const trx = this.uow.getClient();
     const admin = await trx.selectFrom('admin_user').select(['id', 'password_hash', 'role', 'is_active']).where('email', '=', email).executeTakeFirst();
     await this.assertPasswordMatches(admin?.is_active === false ? null : (admin?.password_hash ?? null), password);
-    return { token: this.issueAdminToken(admin!.id, admin!.role), refreshToken: await this.issueRefreshToken('ADMIN', admin!.id) };
+    return {
+      token: this.issueAdminToken(admin!.id, admin!.role),
+      refreshToken: await this.issueRefreshToken('ADMIN', admin!.id),
+      ssoCode: await this.issueSsoHandoffCode('ADMIN', admin!.id),
+    };
   }
 
   async changeCustomerPassword(customerId: string, currentPassword: string, newPassword: string): Promise<void> {

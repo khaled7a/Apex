@@ -486,6 +486,16 @@ export interface ShippingDocument {
   uploaded_by: string | null;
 }
 
+export interface SsoHandoffCode {
+  actor_id: string;
+  actor_type: string;
+  code_hash: string;
+  created_at: Generated<Timestamp>;
+  expires_at: Timestamp;
+  id: Generated<string>;
+  used_at: Timestamp | null;
+}
+
 export interface StateTransitionLog {
   acted_by_id: string | null;
   acted_by_role: string;
@@ -570,6 +580,7 @@ export interface DB {
   scheduled_timer: ScheduledTimer;
   service_type: ServiceType;
   shipping_document: ShippingDocument;
+  sso_handoff_code: SsoHandoffCode;
   state_transition_log: StateTransitionLog;
   supplier_category: SupplierCategory;
   supplier_category_map: SupplierCategoryMap;
