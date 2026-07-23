@@ -1,0 +1,37 @@
+import { Lock, AlertCircle } from 'lucide-react';
+import { ActionForm } from '@/components/ActionForm';
+import { resetPassword } from '@/actions/password-reset';
+import { Logo } from '@/components/Logo';
+
+export default async function ResetPasswordPage({ searchParams }: { searchParams: Promise<{ token?: string }> }) {
+  const { token } = await searchParams;
+
+  return (
+    <div className="mx-auto flex min-h-screen max-w-sm flex-col justify-center px-4">
+      <div className="mb-6 text-center">
+        <Logo className="justify-center text-xl text-emerald-800" />
+      </div>
+      <div className="space-y-4 rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="mb-1 flex items-center gap-2">
+          <span className="inline-flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-50 text-emerald-700">
+            <Lock className="h-4.5 w-4.5" strokeWidth={2} />
+          </span>
+          <h2 className="text-lg font-semibold text-slate-900">إعادة تعيين كلمة المرور</h2>
+        </div>
+        {!token ? (
+          <p className="flex items-center gap-1.5 text-sm text-red-700">
+            <AlertCircle className="h-4 w-4" strokeWidth={2} />
+            الرابط غير صالح — تأكد من استخدام نفس الرابط المُرسَل إلى بريدك.
+          </p>
+        ) : (
+          <ActionForm action={resetPassword} hidden={{ token }} submitLabel="تعيين كلمة المرور الجديدة">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-slate-700">كلمة المرور الجديدة</label>
+              <input name="newPassword" type="password" required minLength={8} className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm" />
+            </div>
+          </ActionForm>
+        )}
+      </div>
+    </div>
+  );
+}

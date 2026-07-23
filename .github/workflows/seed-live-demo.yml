@@ -1,0 +1,36 @@
+name: Seed Live Demo Data
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_deep_orders:
+        description: 'Skip orders 6-8 (require BIDDING_DEADLINE_MS shortened on Render first)'
+        type: boolean
+        default: true
+      api_base:
+        description: 'Base URL of the live apex-api service'
+        type: string
+        default: 'https://apex-api-3u2c.onrender.com'
+  # One-time bootstrap trigger: GitHub only lists/dispatches a workflow_dispatch
+  # workflow via the API once it has run at least once on the target branch —
+  # this push trigger fires that first run automatically (safe hardcoded
+  # defaults below), after which workflow_dispatch works normally for re-runs.
+  push:
+    branches: [claude/b2b-project-review-2xvobw]
+    paths: ['.github/workflows/seed-live-demo.yml']
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run seed script against the live API
+        env:
+          APEX_API_BASE: ${{ (github.event_name == 'workflow_dispatch' && inputs.api_base) || 'https://apex-api-3u2c.onrender.com' }}
+          SKIP_DEEP_ORDERS: ${{ (github.event_name == 'workflow_dispatch' && inputs.skip_deep_orders) || 'true' }}
+        run: node scripts/seed-live-demo.js

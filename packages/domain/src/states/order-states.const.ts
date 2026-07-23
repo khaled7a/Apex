@@ -1,0 +1,79 @@
+/**
+ * The full flattened state list from docs/state-machine.md §1, verbatim,
+ * and must stay byte-identical to the `order_state` enum in docs/schema.sql.
+ * Any drift between this file and the SQL enum is a bug, not a doc issue.
+ */
+export const ORDER_STATES = [
+  'DRAFT',
+  'SUBMITTED',
+  'REVIEW_PENDING',
+  'REVIEW_NEEDS_EDIT',
+  'REVIEW_APPROVED',
+  'REVIEW_REJECTED',
+  'SUPPLIER_CHOICE',
+  'EXT_VETTING_DOCS',
+  'EXT_VETTING_APPROVED',
+  'EXT_VETTING_REJECTED',
+  'REG_PUBLISHED',
+  'REG_BIDS_COLLECTING',
+  'REG_BIDS_EXPIRED_NO_OFFERS',
+  'REG_ADMIN_REVIEW_BIDS',
+  'REG_SHOWN_TO_CUSTOMER',
+  'REG_CUSTOMER_SELECTS',
+  'REG_NO_OFFER_SELECTED',
+  'CONTRACT_PAYMENT_PLAN_CREATED',
+  'CONTRACT_SIGNED',
+  'CONTRACT_BANK_TRANSFER_DONE',
+  'CONTRACT_RECEIPT_UPLOADED',
+  'CONTRACT_ADMIN_VERIFYING',
+  'CONTRACT_RECEIPT_REJECTED',
+  'IDENTITY_REVEALED',
+  'PAYMENT_PENDING_SUPPLIER_ACK',
+  'PAYMENT_PENDING_ADMIN_VERIFICATION',
+  'SUPPLIER_PAYMENT_CONFIRMED',
+  'PROD_DESIGN_SUBMITTED',
+  'PROD_CHECKPOINT_1',
+  'PROD_CHECKPOINT_1_REJECTED',
+  'PROD_FULL_PRODUCTION',
+  'PROD_QC_SUBMITTED',
+  'PROD_CHECKPOINT_2',
+  'PROD_CHECKPOINT_2_REJECTED',
+  'ESCALATION_REMINDER',
+  'ESCALATION_ESCALATED',
+  'AGREEMENT_CANCELLED_PENDING_RENEWAL',
+  'RENEWAL_PENDING_SUPPLIER',
+  'RENEWAL_PENDING_ADMIN',
+  'RENEWAL_SUPPLIER_DECLINED',
+  'LOGISTICS_ONLY_SETUP',
+  'LOADING_SHIPPING',
+  'SHIPPING_DOCS',
+  'PAYMENT_INSTALLMENTS_PENDING',
+  'IN_TRANSIT',
+  'ARRIVED_PORT',
+  'CUSTOMS_FEE_ADDED',
+  'CUSTOMS_CUSTOMER_PAYS',
+  'CUSTOMS_FEE_PROOF_UPLOADED',
+  'CUSTOMS_FEE_VERIFIED',
+  'FINAL_DELIVERY',
+  'CUSTOMER_SIGNED',
+  'SUPPLIER_RATED',
+  'COMPLETED',
+  'DISPUTE_PAYMENT',
+  'DISPUTE_QUALITY',
+  'DISPUTE_DELAY',
+  'DISPUTE_SHIPPING',
+  'DISPUTE_MANDATORY_REFUND',
+  'DISPUTE_RESOLVED',
+  'CANCELLED',
+] as const;
+
+export type OrderState = (typeof ORDER_STATES)[number];
+
+/** States with no outgoing transition at all — reachability tests treat these as legitimate sinks. */
+export const FINAL_STATES: readonly OrderState[] = ['COMPLETED', 'CANCELLED'];
+
+/**
+ * `SUPPLIER_CHOICE` is a pure routing pseudostate (no data of its own) —
+ * every path out of it is guard-selected, never actor-selected directly.
+ */
+export const PSEUDO_STATES: readonly OrderState[] = ['SUPPLIER_CHOICE'];
